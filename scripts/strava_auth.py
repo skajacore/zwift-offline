@@ -10,7 +10,7 @@ Example Usage:
 
   (env) shell$ python strava_auth.py --port=8000 --client-id=123 --client-secret=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
 
-  Then connect in your browser to http://localhost:8000/
+  Then connect in your browser to http://192.168.1.41:8000/
 
   The redirected response (from Strava) will deliver a code that can be exchanged for a token.  The access token will be
   presented in the browser after the exchange.  Save this value into your config (e.g. into your test.ini) to run
@@ -99,7 +99,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self.wfile.write(six.b("ERROR: No code param recevied.\n"))
         else:
             url = client.authorization_url(client_id=self.server.client_id,
-                                           redirect_uri='http://localhost:{}/authorization'.format(self.server.server_port),
+                                           redirect_uri="http://192.168.1.41:8000/authorization",
                                            scope='activity:write')
 
             self.send_response(302)
@@ -114,7 +114,7 @@ def main(port, client_id, client_secret):
     logging.basicConfig(level=logging.INFO, format='%(levelname)-8s %(message)s')
 
     logger = logging.getLogger('auth_responder')
-    logger.info('Listening on localhost:%s' % port)
+    logger.info('Listening on 192.168.1.41:%s' % port)
 
     server = StravaAuthHTTPServer(('', port), RequestHandler, client_id=client_id, client_secret=client_secret)
     server.serve_forever()
