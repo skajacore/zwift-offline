@@ -1,13 +1,16 @@
-FROM python:3.10-alpine as builder
+FROM python:3.11-alpine as builder
 
 WORKDIR /usr/src/app
 
 RUN apk add --no-cache git gcc g++ musl-dev libffi-dev openssl-dev file make
-RUN pip install --user flask flask_sqlalchemy flask-login pyjwt gevent protobuf stravalib garmin-uploader requests dnspython pycryptodome
 
 RUN git clone --depth 1 https://github.com/zoffline/zwift-offline
 
-FROM python:3.10-alpine
+COPY requirements.txt requirements.txt
+RUN pip install --user --requirement requirements.txt
+RUN pip install --user git+https://github.com/oldnapalm/garmin-uploader.git
+
+FROM python:3.11-alpine
 MAINTAINER zoffline <zoffline@tutanota.com>
 
 WORKDIR /usr/src/app

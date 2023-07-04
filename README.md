@@ -2,7 +2,7 @@
 
 zoffline enables the use of [Zwift](http://zwift.com) offline by acting as a partial implementation of a Zwift server. By default zoffline is only for a single player. See [Step 6: Enable Multiplayer](#step-6-optional-enable-multiplayer) for how to enable support for multiple users/profiles.
 
-zoffline also offers riding against ghosts (your previous rides). Enable this feature by checking "Enable ghosts" in zoffline's launcher. See https://github.com/zoffline/zwift-offline/issues/56 for extra details.
+zoffline also offers riding against ghosts (your previous rides). Enable this feature by checking "Enable ghosts" in zoffline's launcher. See [ghosts and bots](https://github.com/zoffline/zwift-offline/wiki/Ghosts-and-bots) for extra details.
 
 Additionally, zoffline's launcher allows selecting a specific map to ride on without mucking about with config files.
 
@@ -18,6 +18,7 @@ To install zoffline on Windows:
 
 * Download the latest zoffline release from https://github.com/zoffline/zwift-offline/releases/latest
   * If you want the pace partners, download the source code package and extract the ``pace_partners`` directory to the same folder zoffline is in.
+* If you are not running zoffline on the same PC that Zwift is running: create a ``server-ip.txt`` file in the ``storage`` directory containing the IP address of the PC running zoffline.
 * Run the downloaded zoffline.exe
   * Once run, zoffline will create a ``storage`` directory in the same folder it's in to store your Zwift progress.
 * Start Zwift with zoffline.exe running (__after completing step 2__ or running __configure_client__ script from https://github.com/zoffline/zwift-offline/releases/tag/zoffline_helper)
@@ -30,11 +31,11 @@ To install zoffline on Linux, Windows, or macOS:
 
 * Install Python 3 (https://www.python.org/downloads/) if not already installed
   * On Windows, installing Python via the Microsoft Store is highly recommend! If using a Python installer, ensure that in the first Python installer screen "Add Python 3.x to PATH" is checked.
-* Install dependencies: flask, flask_sqlalchemy, flask-login, pyjwt, gevent, python-protobuf, pycryptodome, stravalib (optional)
-  * e.g., on Linux/Mac: ``pip3 install flask flask_sqlalchemy flask-login pyjwt gevent protobuf pycryptodome stravalib``
-  * e.g., on Windows in command prompt: ``pip install flask flask_sqlalchemy flask-login pyjwt gevent protobuf pycryptodome stravalib``
-    * You may need to use ``C:\Users\<username>\AppData\Local\Programs\Python\Python<version>\Scripts\pip.exe`` instead of just ``pip``
 * Clone or download this repo
+* Install dependencies
+  * e.g., on Linux/Mac: ``pip3 install -r requirements.txt``
+  * e.g., on Windows in command prompt: ``pip install -r requirements.txt``
+    * You may need to use ``C:\Users\<username>\AppData\Local\Programs\Python\Python<version>\Scripts\pip.exe`` instead of just ``pip``
 * If you are not running zoffline on the same PC that Zwift is running: create a ``server-ip.txt`` file in the ``storage`` directory containing the IP address of the PC running zoffline.
 * Run standalone.py before starting Zwift
   * e.g., on Linux/Mac: ``sudo ./standalone.py``
@@ -95,10 +96,10 @@ zoffline can be installed on the same machine as Zwift or another local machine.
 <details><summary>Windows Instructions</summary>
 
 * Install Zwift
-  * If your Zwift version is 1.0.107342, you're all set.
+  * If your Zwift version is 1.0.114012, you're all set.
   * If Zwift is not installed, install it before installing zoffline.
-  * If your Zwift version is newer than 1.0.107342 and zoffline is running from source: copy ``C:\Program Files (x86)\Zwift\Zwift_ver_cur.xml`` to zoffline's ``cdn/gameassets/Zwift_Updates_Root/`` overwriting the existing file.
-  * If your Zwift version is newer than 1.0.107342 and zoffline is not running from source: wait for zoffline to be updated.
+  * If your Zwift version is newer than 1.0.114012 and zoffline is running from source: copy ``C:\Program Files (x86)\Zwift\Zwift_ver_cur.xml`` to zoffline's ``cdn/gameassets/Zwift_Updates_Root/`` overwriting the existing file.
+  * If your Zwift version is newer than 1.0.114012 and zoffline is not running from source: wait for zoffline to be updated.
 * __NOTE:__ instead of performing the steps below you can instead just run the __configure_client__ script from https://github.com/zoffline/zwift-offline/releases/tag/zoffline_helper
 * On your Windows machine running Zwift, copy the following files in this repo to a known location:
   * [ssl/cert-zwift-com.p12](https://github.com/zoffline/zwift-offline/raw/master/ssl/cert-zwift-com.p12)
@@ -123,9 +124,9 @@ to generate your own certificates and do the same.
 <details><summary>macOS Instructions</summary>
 
 * Install Zwift
-  * If your Zwift version is 1.0.107342, you're all set.
+  * If your Zwift version is 1.0.114012, you're all set.
   * If Zwift is not installed, install it before installing zoffline.
-  * If your Zwift version is newer than 1.0.107342: copy ``~/Library/Application Support/Zwift/ZwiftMac_ver_cur.xml`` to zoffline's ``cdn/gameassets/Zwift_Updates_Root/`` overwriting the existing file.
+  * If your Zwift version is newer than 1.0.114012: copy ``~/Library/Application Support/Zwift/ZwiftMac_ver_cur.xml`` to zoffline's ``cdn/gameassets/Zwift_Updates_Root/`` overwriting the existing file.
 * On your Mac machine running Zwift, copy the following files in this repo to a known location:
   * [ssl/cert-zwift-com.p12](https://github.com/zoffline/zwift-offline/raw/master/ssl/cert-zwift-com.p12)
   * [ssl/cert-zwift-com.pem](https://github.com/zoffline/zwift-offline/raw/master/ssl/cert-zwift-com.pem)
@@ -134,7 +135,7 @@ to generate your own certificates and do the same.
     * Right click "\*.zwift.com", select "Get Info" and under "Trust" choose "When using this certificate: Always Trust".
     * If you're prompted for a password, just leave it blank. There is no password.
 * Using a text editor open ``~/Library/Application Support/Zwift/data/cacert.pem``
-  * Append the contents of ``ssl/cert-zwift-com.pem`` to cacert.pem
+  * Append the contents of the SSL certificate ``ssl/cert-zwift-com.pem`` to cacert.pem (only the certificate and not the included private key)
 * Using a text editor (with admin privileges) open ``/Applications/Zwift.app/Contents/Info.plist``
   * Insert in the main dict:
     ```
@@ -168,7 +169,7 @@ to generate your own certificates and do the same.
 
 * Install required apps:
   * Download and install ``ZofflineObb.apk`` from [here](https://github.com/Argon2000/ZofflineObbAndroid/releases/latest)
-  * Download "#1 HOST CHANGER - BEST FOR GAMING" from Google Play ([link](https://play.google.com/store/apps/details?id=best.see.world.company))
+  * Download "Gaming VPN" from Google Play ([link](https://play.google.com/store/apps/details?id=com.gamingvpn))
   * Create a `hosts.txt` file to use with the app (you could use a text editor app or create it online with an online tool such as [this](https://passwordsgenerator.net/text-editor/)). The file must look like this (replace ``<zoffline ip>`` with the IP address of the machine running zoffline):
   ```
   <zoffline ip> us-or-rly101.zwift.com
@@ -177,7 +178,6 @@ to generate your own certificates and do the same.
   ```
   * Run `Host Changer`, select created `hosts.txt` file and press the button
   * Optionally, instead of using the "Host Changer" app, you can create a ``fake-dns.txt`` file in the ``storage`` directory and set the "DNS 1" of your phone Wi-Fi connection to the IP address of the PC running zoffline
-    * If running from source, install the required module with ``pip3 install dnspython``
   * Note: If you know what you're doing and have a capable enough router you can adjust your router to alter these DNS records instead of using the "Host Changer" app or changing your phone DNS.
 * Patch after every installation or update:
   * Install/update Zwift from Google play, but do not start it yet.
@@ -240,13 +240,13 @@ gender). Your profile can be further customized and changed via the in game
 menu (e.g. name, nationality, weight change, etc).
 
 To obtain your current profile:
+* __NOTE:__ instead of performing the steps below you can instead use the "Settings - Zwift" button in the launcher window (Windows and macOS only).
 * Ensure zoffline is disabled.
 * Run ``scripts/get_profile.py -u <your_zwift_username>``
   * Or, if using the Windows zoffline.exe version without Python installed you can run ``get_profile.exe`` obtained from https://github.com/zoffline/zwift-offline/releases/tag/zoffline_helper in place of ``scripts/get_profile.py``
-* Move the resulting ``profile.bin`` (saved in whatever directory you ran get_profile.py in) into the ``storage`` directory.
-  * If using zoffline.exe on Windows, create a ``storage`` directory within the same folder as zoffline.exe if it does not already exist.
-  * If multiplayer is enabled, use the profile button in the launcher window to import your file.
-  * If using Docker, move ``profile.bin`` into the path you passed to ``-v``
+* Move the resulting ``profile.bin`` and ``achievements.bin`` (saved in whatever directory you ran get_profile.py in) into the ``storage/1`` directory.
+  * If using zoffline.exe on Windows, create a ``storage/1`` directory within the same folder as zoffline.exe if it does not already exist.
+  * If using Docker, the directory ``1`` should be in the path you passed to ``-v``
 
 </details>
 
@@ -254,17 +254,14 @@ To obtain your current profile:
 
 <details><summary>Expand</summary>
 
-* Install dependencies: stravalib
-  * e.g., on Linux/Mac: ``pip3 install stravalib``
-  * e.g., on Windows in command prompt: ``pip install stravalib``
-    * You may need to use ``C:\Users\<username>\AppData\Local\Programs\Python\Python39\Scripts\pip.exe`` instead of just ``pip``
-  * Or, if using the Windows zoffline.exe version without Python installed you can run ``strava_auth.exe`` obtained from https://github.com/zoffline/zwift-offline/releases/tag/zoffline_helper in place of ``scripts/strava_auth.py`` below.
+* __NOTE:__ instead of performing the steps below you can instead use the "Settings - Strava" button in the launcher window to authorize (Windows and macOS only).
 * [OPTIONAL] Get CLIENT_ID and CLIENT_SECRET from https://www.strava.com/settings/api
 * Run ``scripts/strava_auth.py --client-id CLIENT_ID --client-secret CLIENT_SECRET``
+  * Or, if using the Windows zoffline.exe version without Python installed you can run ``strava_auth.exe`` obtained from https://github.com/zoffline/zwift-offline/releases/tag/zoffline_helper in place of ``scripts/strava_auth.py``
   * Run without arguments to use default values.
 * Open http://localhost:8000/ and authorize.
-* Move the resulting ``strava_token.txt`` (saved in whatever directory you ran ``strava_auth.py`` in) into the ``storage/<player_id>`` directory.
-  * If multiplayer is enabled, use the Strava button in the launcher window to authorize.
+* Move the resulting ``strava_token.txt`` (saved in whatever directory you ran ``strava_auth.py`` in) into the ``storage/1`` directory.
+* If testing, ride at least 300 meters, shorter activities won't be uploaded.
 
 </details>
 
@@ -272,19 +269,15 @@ To obtain your current profile:
 
 <details><summary>Expand</summary>
 
-* Install dependencies: garmin-uploader
-  * e.g., on Linux/Mac: ``pip3 install garmin-uploader``
-  * e.g., on Windows in command prompt: ``pip install garmin-uploader``
-    * You may need to use ``C:\Users\<username>\AppData\Local\Programs\Python\Python39\Scripts\pip.exe`` instead of just ``pip``
-  * You may need to use the cloudscraper branch if upload fails: ``pip uninstall -y garmin-uploader ; pip install git+https://github.com/La0/garmin-uploader.git@cloudscraper``
-  * If cloudscraper doesn't work you can try the selenium method: ``pip uninstall -y garmin-uploader ; pip install git+https://github.com/ursoft/garmin-uploader.git@cloudscraper selenium webdriver_manager``
-* Create a file ``garmin_credentials.txt`` in the ``storage/<player_id>`` directory containing your login credentials
+* If running from source, install garmin-uploader: ``pip install git+https://github.com/oldnapalm/garmin-uploader.git``
+  * If the upload fails you can try the selenium method: ``pip uninstall -y garmin-uploader ; pip install git+https://github.com/ursoft/garmin-uploader.git@cloudscraper selenium webdriver_manager``
+* __NOTE:__ instead of performing the step below you can instead use the "Settings - Garmin" button in the launcher window to enter your credentials (Windows and macOS only).
+* Create a file ``garmin_credentials.txt`` in the ``storage/1`` directory containing your login credentials
   ```
   <username>
   <password>
   ```
   * Note: this is not secure. Only do this if you are comfortable with your login credentials being stored in a clear text file.
-  * If multiplayer is enabled, use the Garmin button in the launcher window to encrypt the credentials file.
 
 </details>
 
@@ -292,12 +285,12 @@ To obtain your current profile:
 
 <details><summary>Expand</summary>
 
-To enable support for multiple users perform the steps below. zoffline's previous multi-profile support has been superceded by full multiplayer support. If you were previously using multiple profiles with zoffline you will need to enable multiplayer to continue supporting multiple users.
+To enable support for multiple users perform the steps below:
 
 * Create a ``multiplayer.txt`` file in the ``storage`` directory.
 * If you are not running zoffline on the same PC that Zwift is running: create a ``server-ip.txt`` file in the ``storage`` directory containing the IP address of the PC running zoffline.
   * TCP ports 80, 443, 3025 and UDP port 3024 will need to be open on the PC running zoffline if its running remotely.
-* Start Zwift and create an account in the new Zwift launcher (desktop solution only, for Android go to `https://<zoffline ip>/signup/`, in-app registration does not work yet) and upload your ``profile.bin``, ``strava_token.txt``, and/or ``garmin_credentials.txt`` if you have them.
+* Start Zwift and create an account in the launcher (desktop solution only, for Android go to `https://<zoffline ip>/signup/`).
   * This account will only exist on your zoffline server and has no relation with your actual Zwift account.
 
 </details>
@@ -313,7 +306,7 @@ Create a ``server-ip.txt`` file in the ``storage`` directory containing the IP a
 * Open Command Prompt, cd to that location and run
   * ``apk-mitm --certificate cert-zwift-com.pem zca.apk``
 * Copy ``zca-patched.apk`` to your phone and install it
-* Download "#1 HOST CHANGER - BEST FOR GAMING" from Google Play ([link](https://play.google.com/store/apps/details?id=best.see.world.company))
+* Download "Gaming VPN" from Google Play ([link](https://play.google.com/store/apps/details?id=com.gamingvpn))
 * Create a ``hosts.txt`` file to use with the app (you could use a text editor app or create it online with an online tool such as [this](https://passwordsgenerator.net/text-editor/)). The file must look like this (replace ``<zoffline ip>`` with the IP address of the machine running zoffline):
 ```
 <zoffline ip> us-or-rly101.zwift.com
@@ -321,7 +314,6 @@ Create a ``server-ip.txt`` file in the ``storage`` directory containing the IP a
 ```
 * Run "Host Changer", select created ``hosts.txt`` file and press the button
 * Optionally, instead of using the "Host Changer" app, you can create a ``fake-dns.txt`` file in the ``storage`` directory and set the "DNS 1" of your phone Wi-Fi connection to the IP address of the PC running zoffline
-  * If running from source, install the required module with ``pip3 install dnspython``
 * Note: If you know what you're doing and have a capable enough router you can adjust your router to alter these DNS records instead of using the "Host Changer" app or changing your phone DNS.
 
 </details>
@@ -331,8 +323,8 @@ Create a ``server-ip.txt`` file in the ``storage`` directory containing the IP a
 <details><summary>Expand</summary>
 
 * To obtain the official map schedule and update files from Zwift server: create a ``cdn-proxy.txt`` file in the ``storage`` directory. This can only work if you are running zoffline on a different machine than the Zwift client.
-* To enable the password reset feature when multiplayer is enabled: create a ``gmail_credentials.txt`` file in the ``storage`` directory containing the login credentials of a Gmail account. You need to enable the "Less secure app access" in the account settings and you may need to access https://accounts.google.com/DisplayUnlockCaptcha to allow the login from the server.
-* To enable the Discord bridge bot: ``pip3 install discord`` and create a ``discord.cfg`` file in the ``storage`` directory containing
+* To enable the password reset feature when multiplayer is enabled: create a ``gmail_credentials.txt`` file in the ``storage`` directory containing the login credentials of a Gmail account. You need to access https://security.google.com/settings/security/apppasswords and create an app password to allow the login from the server.
+* To enable the Discord bridge bot: ``pip3 install discord.py`` and create a ``discord.cfg`` file in the ``storage`` directory containing
   ```
   [discord]
   token = 
@@ -360,25 +352,18 @@ Docker
 -or-
 
 * Python 3 (https://www.python.org/downloads/)
-  * On Windows, installing Python via the Microsoft Store is highly recommend! If using a Python installer, ensure that in the first Python installer screen "Add Python 3.x to PATH" is checked.
-* Flask (http://flask.pocoo.org/)
-  * ``pip3 install flask``
+* Flask (https://flask.palletsprojects.com/)
 * python-protobuf (https://pypi.org/project/protobuf/)
-  * ``pip3 install protobuf``
 * pyJWT (https://pyjwt.readthedocs.io/)
-  * ``pip3 install pyjwt``
-* Flask-Login (https://flask-login.readthedocs.io/en/latest/)
-  * ``pip3 install flask-login``
-* Flask-SQLAlchemy (https://flask-sqlalchemy.palletsprojects.com/en/latest/)
-  * ``pip3 install flask_sqlalchemy``
+* Flask-Login (https://flask-login.readthedocs.io/)
+* Flask-SQLAlchemy (https://flask-sqlalchemy.palletsprojects.com/)
 * gevent (http://www.gevent.org/)
-  * ``pip3 install gevent``
 * pycryptodome (https://pypi.org/project/pycryptodome/)
-  * ``pip3 install pycryptodome``
-* OPTIONAL: stravalib (https://github.com/hozn/stravalib)
-  * ``pip3 install stravalib``
+* dnspython (https://www.dnspython.org/)
+* fitdecode (https://pypi.org/project/fitdecode/)
+* stravalib (https://github.com/hozn/stravalib)
 * OPTIONAL: garmin-uploader (https://github.com/La0/garmin-uploader)
-  * ``pip3 install garmin-uploader``
+* OPTIONAL: discord.py (https://discordpy.readthedocs.io/)
 
 
 ## Note

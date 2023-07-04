@@ -20,6 +20,7 @@ import base64
 import uuid
 import jwt
 import sqlalchemy
+import fitdecode
 import xml.etree.ElementTree as ET
 from copy import deepcopy
 from functools import wraps
@@ -37,6 +38,8 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
+from collections import deque
+from itertools import islice
 
 sys.path.append(os.path.join(sys.path[0], 'protobuf')) # otherwise import in .proto does not work
 import udp_node_msgs_pb2
@@ -47,6 +50,7 @@ import login_pb2
 import per_session_info_pb2
 import profile_pb2
 import segment_result_pb2
+import route_result_pb2
 import world_pb2
 import zfiles_pb2
 import hash_seeds_pb2
@@ -94,7 +98,6 @@ else:
     server_ip = '127.0.0.1'
 SECRET_KEY_FILE = "%s/secret-key.txt" % STORAGE_DIR
 ENABLEGHOSTS_FILE = "%s/enable_ghosts.txt" % STORAGE_DIR
-NEWHOME_FILE = "%s/new_home.txt" % STORAGE_DIR
 MULTIPLAYER = os.path.exists("%s/multiplayer.txt" % STORAGE_DIR)
 if MULTIPLAYER:
     try:
@@ -106,12 +109,17 @@ if MULTIPLAYER:
     from logging.handlers import RotatingFileHandler
     logHandler = RotatingFileHandler('%s/zoffline.log' % LOGS_DIR, maxBytes=1000000, backupCount=10)
     logger.addHandler(logHandler)
-    CREDENTIALS_KEY_FILE = "%s/credentials-key.bin" % STORAGE_DIR
-    if not os.path.exists(CREDENTIALS_KEY_FILE):
-        with open(CREDENTIALS_KEY_FILE, 'wb') as f:
-            f.write(get_random_bytes(32))
-    with open(CREDENTIALS_KEY_FILE, 'rb') as f:
-        credentials_key = f.read()
+
+CREDENTIALS_KEY_FILE = "%s/credentials-key.bin" % STORAGE_DIR
+if not os.path.exists(CREDENTIALS_KEY_FILE):
+    with open(CREDENTIALS_KEY_FILE, 'wb') as f:
+        f.write(get_random_bytes(32))
+with open(CREDENTIALS_KEY_FILE, 'rb') as f:
+    credentials_key = f.read()
+
+import warnings
+with warnings.catch_warnings():
+    from stravalib.client import Client
 
 STRAVA_CLIENT_ID = '28117'
 STRAVA_CLIENT_SECRET = '41b7b7b76d8cfc5dc12ad5f020adfea17da35468'
@@ -150,7 +158,6 @@ class User(UserMixin, db.Model):
     last_name = db.Column(db.String(100), nullable=False)
     pass_hash = db.Column(db.String(100), nullable=False)
     enable_ghosts = db.Column(db.Integer, nullable=False, default=1)
-    new_home = db.Column(db.Integer, nullable=False, default=0)
     is_admin = db.Column(db.Integer, nullable=False, default=0)
     remember = db.Column(db.Integer, nullable=False, default=0)
 
@@ -172,15 +179,14 @@ class User(UserMixin, db.Model):
             return None
         id = data.get('user')
         if id:
-            return User.query.get(id)
+            return db.session.get(User, id)
         return None
 
 class AnonUser(User, AnonymousUserMixin, db.Model):
     username = "zoffline"
     first_name = "z"
     last_name = "offline"
-    enable_ghosts = True
-    new_home = False
+    enable_ghosts = os.path.isfile(ENABLEGHOSTS_FILE)
 
     def is_authenticated(self):
         return True
@@ -249,6 +255,34 @@ class SegmentResult(db.Model):
     f22 = db.Column(db.Integer)
     f23 = db.Column(db.Text)
 
+class RouteResult(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    player_id = db.Column(db.Integer)
+    server_realm = db.Column(db.Integer)
+    map_id = db.Column(db.Integer)
+    route_hash = db.Column(db.Integer)
+    event_id = db.Column(db.Integer)
+    world_time = db.Column(db.Integer)
+    elapsed_ms = db.Column(db.Integer)
+    power_type = db.Column(db.Integer)
+    weight_in_grams = db.Column(db.Integer)
+    height_in_centimeters = db.Column(db.Integer)
+    ftp = db.Column(db.Integer)
+    avg_power = db.Column(db.Integer)
+    max_power = db.Column(db.Integer)
+    avg_hr = db.Column(db.Integer)
+    max_hr = db.Column(db.Integer)
+    calories = db.Column(db.Integer)
+    gender = db.Column(db.Integer)
+    player_type = db.Column(db.Integer)
+    sport = db.Column(db.Integer)
+    activity_id = db.Column(db.Integer)
+    steering = db.Column(db.Integer)
+    hr_monitor = db.Column(db.Text)
+    power_meter = db.Column(db.Text)
+    controllable = db.Column(db.Text)
+    cadence_sensor = db.Column(db.Text)
+
 class Goal(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     player_id = db.Column(db.Integer)
@@ -272,6 +306,7 @@ class Playback(db.Model):
     segment_id = db.Column(db.Integer, nullable=False)
     time = db.Column(db.Float, nullable=False)
     world_time = db.Column(db.Integer, nullable=False)
+    type = db.Column(db.Integer)
 
 class Zfile(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -289,6 +324,19 @@ class Notification(db.Model):
     event_id = db.Column(db.Integer, nullable=False)
     player_id = db.Column(db.Integer, nullable=False)
     json = db.Column(db.Text, nullable=False)
+
+class ActivityFile(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    activity_id = db.Column(db.Integer, nullable=False)
+    full = db.Column(db.Integer, nullable=False)
+
+class PowerCurve(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    player_id = db.Column(db.Integer, nullable=False)
+    time = db.Column(db.Text, nullable=False)
+    power = db.Column(db.Integer, nullable=False)
+    power_wkg = db.Column(db.Float, nullable=False)
+    timestamp = db.Column(db.Integer, nullable=False)
 
 class Version(db.Model):
     version = db.Column(db.Integer, primary_key=True)
@@ -312,6 +360,7 @@ class PartialProfile:
     route = 0
     player_type = 'NORMAL'
     male = True
+    weight_in_grams = 0
     imageSrc = ''
     def to_json(self):
         return {"countryCode": self.country_code,
@@ -334,6 +383,7 @@ class Online:
     yorkshire = 0
     france = 0
     paris = 0
+    scotland = 0
 
 courses_lookup = {
     2: 'Richmond',
@@ -349,11 +399,38 @@ courses_lookup = {
     14: 'France',
     15: 'Paris',
     16: 'Gravel Mountain',  # event specific
-    17: 'Scotland'  # event specific
+    17: 'Scotland'
 }
 
-tree = ET.parse('%s/cdn/gameassets/GameDictionary.xml' % SCRIPT_DIR)
-GD = tree.getroot()
+def load_game_dictionary():
+    tree = ET.parse('%s/cdn/gameassets/GameDictionary.xml' % SCRIPT_DIR)
+    root = tree.getroot()
+    gd = {}
+    gd['headgears'] = [int(x.get('signature')) for x in root.findall("./HEADGEARS/HEADGEAR")]
+    gd['glasses'] = [int(x.get('signature')) for x in root.findall("./GLASSES/GLASS")]
+    gd['bikeshoes'] = [int(x.get('signature')) for x in root.findall("./BIKESHOES/BIKESHOE")]
+    gd['socks'] = [int(x.get('signature')) for x in root.findall("./SOCKS/SOCK")]
+    gd['jerseys'] = [int(x.get('signature')) for x in root.findall("./JERSEYS/JERSEY")]
+    gd['bikefrontwheels'] = [int(x.get('signature')) for x in root.findall("./BIKEFRONTWHEELS/BIKEFRONTWHEEL")]
+    gd['bikerearwheels'] = [int(x.get('signature')) for x in root.findall("./BIKEREARWHEELS/BIKEREARWHEEL")]
+    gd['runshirts'] = [int(x.get('signature')) for x in root.findall("./RUNSHIRTS/RUNSHIRT")]
+    gd['runshorts'] = [int(x.get('signature')) for x in root.findall("./RUNSHORTS/RUNSHORT")]
+    gd['runshoes'] = [int(x.get('signature')) for x in root.findall("./RUNSHOES/RUNSHOE")]
+    bikeframes = {}
+    for x in root.findall("./BIKEFRAMES/BIKEFRAME"):
+        bikeframes[int(x.get('signature'))] = x.get('name')
+    gd['bikeframes'] = bikeframes
+    routes = {}
+    for x in root.findall("./ACHIEVEMENTS/ACHIEVEMENT"):
+        if x.get('imageName') == "RouteComplete": routes[x.get('name')] = int(x.get('signature'))
+    achievements = {}
+    for x in root.findall("./ROUTES/ROUTE"):
+        name = x.get('name').upper()
+        if name in routes: achievements[routes[name]] = int(x.get('signature'))
+    gd['achievements'] = achievements
+    return gd
+
+GD = load_game_dictionary()
 
 
 def get_utc_time():
@@ -387,6 +464,8 @@ def get_online():
             online_in_region.france += 1
         elif course_name == 'Paris':
             online_in_region.paris += 1
+        elif course_name == 'Scotland':
+            online_in_region.scotland += 1
         online_in_region.total += 1
     return online_in_region
 
@@ -412,7 +491,7 @@ def get_partial_profile(player_id):
             g_id = math.floor(player_id / 10000000)
             p_id = player_id - g_id * 10000000
             partial_profile.first_name = ''
-            partial_profile.last_name = time_since(global_ghosts[p_id].play[g_id-1].states[0])
+            partial_profile.last_name = time_since(global_ghosts[p_id].play[g_id-1].date)
             return partial_profile
         else:
             #Read from disk
@@ -432,10 +511,10 @@ def get_partial_profile(player_id):
         partial_profile.country_code = profile.country_code
         partial_profile.player_type = profile_pb2.PlayerType.Name(jsf(profile, 'player_type', 1))
         partial_profile.male = profile.is_male
+        partial_profile.weight_in_grams = profile.weight_in_grams
         for f in profile.public_attributes:
             #0x69520F20=1766985504 - crc32 of "PACE PARTNER - ROUTE"
-            #TODO: -1021012238: figure out
-            if f.id == 1766985504 or f.id == -1021012238:  #-1021012238 == 3273955058
+            if f.id == 1766985504:
                 if f.number_value >= 0:
                     partial_profile.route = toSigned(f.number_value, 4)
                 else:
@@ -503,7 +582,7 @@ def signup():
             flash("Passwords did not match.")
             return redirect(url_for('signup'))
 
-        hashed_pwd = generate_password_hash(password, 'sha256')
+        hashed_pwd = generate_password_hash(password, 'scrypt')
 
         new_user = User(username=username, pass_hash=hashed_pwd, first_name=first_name, last_name=last_name)
         db.session.add(new_user)
@@ -544,12 +623,12 @@ def login():
             except IOError as e:
                 logger.error("failed to create profile dir (%s):  %s", profile_dir, str(e))
                 return '', 500
-            return redirect(url_for("user_home", username=username, enable_ghosts=bool(user.enable_ghosts), new_home=bool(user.new_home), online=get_online()))
+            return redirect(url_for("user_home", username=username, enable_ghosts=bool(user.enable_ghosts), online=get_online()))
         else:
             flash("Invalid username or password.")
 
     if current_user.is_authenticated and current_user.remember:
-        return redirect(url_for("user_home", username=current_user.username, enable_ghosts=bool(current_user.enable_ghosts), new_home=bool(current_user.new_home), online=get_online()))
+        return redirect(url_for("user_home", username=current_user.username, enable_ghosts=bool(current_user.enable_ghosts), online=get_online()))
 
     user = User.verify_token(request.args.get('token'))
     if user:
@@ -588,7 +667,7 @@ def forgot():
                         server.close()
                         flash("E-mail sent.")
             except Exception as exc:
-                logger.warn('send e-mail: %s' % repr(exc))
+                logger.warning('send e-mail: %s' % repr(exc))
                 flash("Could not send e-mail.")
         else:
             flash("Invalid username.")
@@ -608,7 +687,7 @@ def api_users_password_reset():
     confirm_password = request.form.get("password-confirm")
     if password != confirm_password:
         return 'passwords not match', 500
-    hashed_pwd = generate_password_hash(password, 'sha256')
+    hashed_pwd = generate_password_hash(password, 'scrypt')
     current_user.pass_hash = hashed_pwd
     db.session.commit()
     return '', 200
@@ -627,23 +706,17 @@ def reset(username):
             flash("Passwords did not match.")
             return redirect(url_for('reset', username=current_user.username))
 
-        hashed_pwd = generate_password_hash(password, 'sha256')
+        hashed_pwd = generate_password_hash(password, 'scrypt')
         current_user.pass_hash = hashed_pwd
         db.session.commit()
         flash("Password changed.")
-
+        return redirect(url_for('settings', username=current_user.username))
     return render_template("reset.html", username=current_user.username)
 
 
 @app.route("/strava", methods=['GET'])
 @login_required
 def strava():
-    try:
-        from stravalib.client import Client
-    except ImportError as exc:
-        logger.warn('stravalib: %s' % repr(exc))
-        flash("stravalib is not installed. Skipping Strava authorization attempt.")
-        return redirect('/user/%s/' % current_user.username)
     client = Client()
     url = client.authorization_url(client_id=STRAVA_CLIENT_ID,
                                    redirect_uri='https://launcher.zwift.com/authorization',
@@ -654,7 +727,6 @@ def strava():
 @app.route("/authorization", methods=["GET", "POST"])
 @login_required
 def authorization():
-    from stravalib.client import Client
     try: 
         client = Client()
         code = request.args.get('code')
@@ -665,89 +737,113 @@ def authorization():
             f.write(token_response['access_token'] + '\n');
             f.write(token_response['refresh_token'] + '\n');
             f.write(str(token_response['expires_at']) + '\n');
-        flash("Strava authorized. Go to \"Profile\" to remove authorization.")
+        flash("Strava authorized.")
     except Exception as exc:
-        logger.warn('Strava: %s' % repr(exc))
-        flash("Strava canceled.")
-    flash("Please close this window and return to Zwift Launcher.")
-    return render_template("strava.html", username=current_user.username)
+        logger.warning('Strava: %s' % repr(exc))
+        flash("Strava authorization canceled.")
+    return redirect(url_for('settings', username=current_user.username))
+
+
+def encrypt_credentials(file, cred):
+    try:
+        credentials = (cred[0] + '\n' + cred[1]).encode('UTF-8')
+        cipher_suite = AES.new(credentials_key, AES.MODE_CFB)
+        ciphered_text = cipher_suite.encrypt(credentials)
+        with open(file, 'wb') as f:
+            f.write(cipher_suite.iv)
+            f.write(ciphered_text)
+        flash("Credentials saved.")
+    except Exception as exc:
+        logger.warning('encrypt_credentials: %s' % repr(exc))
+        flash("Error saving %s" % file)
+
+def decrypt_credentials(file):
+    cred = ('', '')
+    if os.path.isfile(file):
+        with open(file, 'rb') as f:
+            iv = f.read(16)
+            ciphered_text = f.read()
+            cipher_suite = AES.new(credentials_key, AES.MODE_CFB, iv=iv)
+            unciphered_text = cipher_suite.decrypt(ciphered_text).decode('UTF-8')
+            cred = unciphered_text.splitlines()
+    return((cred[0], cred[1]))
 
 
 @app.route("/profile/<username>/", methods=["GET", "POST"])
 @login_required
 def profile(username):
+    profile_dir = os.path.join(STORAGE_DIR, str(current_user.player_id))
+    file = os.path.join(profile_dir, 'zwift_credentials.bin')
+    cred = decrypt_credentials(file)
     if request.method == "POST":
         if request.form['username'] == "" or request.form['password'] == "":
             flash("Zwift credentials can't be empty.")
             return render_template("profile.html", username=current_user.username)
-
+        if not request.form.get("zwift_profile") and not request.form.get("achievements") and not request.form.get("save_zwift"):
+            flash("Select at least one option.")
+            return render_template("profile.html", username=current_user.username, uname=cred[0], passw=cred[1])
         username = request.form['username']
         password = request.form['password']
-        profile_dir = os.path.join(STORAGE_DIR, str(current_user.player_id))
         session = requests.session()
-
         try:
             access_token, refresh_token = online_sync.login(session, username, password)
             try:
-                profile = online_sync.query_player_profile(session, access_token)
-                with open('%s/profile.bin' % SCRIPT_DIR, 'wb') as f:
-                    f.write(profile)
+                if request.form.get("zwift_profile"):
+                    profile = online_sync.query(session, access_token, "api/profiles/me")
+                    with open('%s/profile.bin' % profile_dir, 'wb') as f:
+                        f.write(profile)
+                if request.form.get("achievements"):
+                    achievements = online_sync.query(session, access_token, "achievement/loadPlayerAchievements")
+                    with open('%s/achievements.bin' % profile_dir, 'wb') as f:
+                        f.write(achievements)
                 online_sync.logout(session, refresh_token)
-                os.rename('%s/profile.bin' % SCRIPT_DIR, '%s/profile.bin' % profile_dir)
-                flash("Zwift profile installed locally.")
+                if request.form.get("save_zwift"):
+                    encrypt_credentials(file, (username, password))
             except Exception as exc:
-                logger.warn('Zwift profile: %s' % repr(exc))
+                logger.warning('Zwift profile: %s' % repr(exc))
                 flash("Error downloading profile.")
-            if request.form.get("save_zwift", None) != None:
-                try:
-                    zwift_credentials = (username + '\n' + password).encode('UTF-8')
-                    cipher_suite = AES.new(credentials_key, AES.MODE_CFB)
-                    ciphered_text = cipher_suite.encrypt(zwift_credentials)
-                    file_path = os.path.join(profile_dir, 'zwift_credentials.bin')
-                    with open(file_path, 'wb') as fw:
-                        fw.write(cipher_suite.iv)
-                        fw.write(ciphered_text)
-                    flash("Zwift credentials saved. Go to \"Profile\" to remove credentials.")
-                except Exception as exc:
-                    logger.warn('zwift_credentials: %s' % repr(exc))
-                    flash("Error saving 'zwift_credentials.bin' file.")
+                return render_template("profile.html", username=current_user.username, uname=cred[0], passw=cred[1])
         except Exception as exc:
-            logger.warn('online_sync.login: %s' % repr(exc))
+            logger.warning('online_sync.login: %s' % repr(exc))
             flash("Invalid username or password.")
-    return render_template("profile.html", username=current_user.username)
+            return render_template("profile.html", username=current_user.username)
+        return redirect(url_for('settings', username=current_user.username))
+    return render_template("profile.html", username=current_user.username, uname=cred[0], passw=cred[1])
 
 
 @app.route("/garmin/<username>/", methods=["GET", "POST"])
 @login_required
 def garmin(username):
+    file = '%s/%s/garmin_credentials.bin' % (STORAGE_DIR, current_user.player_id)
     if request.method == "POST":
         if request.form['username'] == "" or request.form['password'] == "":
             flash("Garmin credentials can't be empty.")
             return render_template("garmin.html", username=current_user.username)
+        encrypt_credentials(file, (request.form['username'], request.form['password']))
+        return redirect(url_for('settings', username=current_user.username))
+    cred = decrypt_credentials(file)
+    return render_template("garmin.html", username=current_user.username, uname=cred[0], passw=cred[1])
 
-        username = request.form['username']
-        password = request.form['password']
 
-        try:
-            garmin_credentials = (username + '\n' + password).encode('UTF-8')
-            cipher_suite = AES.new(credentials_key, AES.MODE_CFB)
-            ciphered_text = cipher_suite.encrypt(garmin_credentials)
-            file_path = os.path.join(STORAGE_DIR, str(current_user.player_id), 'garmin_credentials.bin')
-            with open(file_path, 'wb') as fw:
-                fw.write(cipher_suite.iv)
-                fw.write(ciphered_text)
-            flash("Garmin credentials saved. Go to \"Profile\" to remove credentials.")
-        except Exception as exc:
-            logger.warn('garmin_credentials: %s' % repr(exc))
-            flash("Error saving 'garmin_credentials.bin' file.")
-    return render_template("garmin.html", username=current_user.username)
+@app.route("/intervals/<username>/", methods=["GET", "POST"])
+@login_required
+def intervals(username):
+    file = '%s/%s/intervals_credentials.bin' % (STORAGE_DIR, current_user.player_id)
+    if request.method == "POST":
+        if request.form['athlete_id'] == "" or request.form['api_key'] == "":
+            flash("Intervals.icu credentials can't be empty.")
+            return render_template("intervals.html", username=current_user.username)
+        encrypt_credentials(file, (request.form['athlete_id'], request.form['api_key']))
+        return redirect(url_for('settings', username=current_user.username))
+    cred = decrypt_credentials(file)
+    return render_template("intervals.html", username=current_user.username, aid=cred[0], akey=cred[1])
 
 
 @app.route("/user/<username>/")
 @login_required
 def user_home(username):
-    return render_template("user_home.html", username=current_user.username, enable_ghosts=bool(current_user.enable_ghosts), new_home=bool(current_user.new_home),
-        online=get_online(), is_admin=current_user.is_admin, restarting=restarting, restarting_in_minutes=restarting_in_minutes, server_ip=os.path.exists(SERVER_IP_FILE))
+    return render_template("user_home.html", username=current_user.username, enable_ghosts=bool(current_user.enable_ghosts),
+        online=get_online(), is_admin=current_user.is_admin, restarting=restarting, restarting_in_minutes=restarting_in_minutes)
 
 def enqueue_player_update(player_id, wa_bytes):
     if not player_id in player_update_queue:
@@ -804,7 +900,7 @@ def restart_server():
         send_restarting_message_thread = threading.Thread(target=send_restarting_message)
         send_restarting_message_thread.start()
         discord.send_message('Restarting / Shutting down in %s minutes. Save your progress or continue riding until server is back online' % restarting_in_minutes)
-    return redirect('/user/%s/' % current_user.username)
+    return redirect(url_for('user_home', username=current_user.username))
 
 
 @app.route("/cancelrestart")
@@ -818,7 +914,7 @@ def cancel_restart_server():
         message = 'Restart of the server has been cancelled. Ride on!'
         send_message_to_all_online(message)
         discord.send_message(message)
-    return redirect('/user/%s/' % current_user.username)
+    return redirect(url_for('user_home', username=current_user.username))
 
 
 @app.route("/reloadbots")
@@ -827,58 +923,40 @@ def reload_bots():
     global reload_pacer_bots
     if bool(current_user.is_admin):
         reload_pacer_bots = True
-    return redirect('/user/%s/' % current_user.username)
+    return redirect(url_for('user_home', username=current_user.username))
 
 
-@app.route("/upload/<username>/", methods=["GET", "POST"])
+@app.route("/settings/<username>/", methods=["GET", "POST"])
 @login_required
-def upload(username):
+def settings(username):
     profile_dir = os.path.join(STORAGE_DIR, str(current_user.player_id))
-
     if request.method == 'POST':
         uploaded_file = request.files['file']
         if uploaded_file.filename in ['profile.bin', 'achievements.bin']:
             file_path = os.path.join(profile_dir, uploaded_file.filename)
             uploaded_file.save(file_path)
-            flash("File %s uploaded." % uploaded_file.filename)
         else:
             flash("Invalid file name.")
-
-    name = ''
     profile = None
     profile_file = os.path.join(profile_dir, 'profile.bin')
     if os.path.isfile(profile_file):
         stat = os.stat(profile_file)
         profile = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(stat.st_mtime))
-        with open(profile_file, 'rb') as fd:
-            p = profile_pb2.PlayerProfile()
-            p.ParseFromString(fd.read())
-            name = "%s %s" % (p.first_name, p.last_name)
-    token = None
-    token_file = os.path.join(profile_dir, 'strava_token.txt')
-    if os.path.isfile(token_file):
-        stat = os.stat(token_file)
-        token = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(stat.st_mtime))
-    garmin = None
-    garmin_file = os.path.join(profile_dir, 'garmin_credentials.bin')
-    if os.path.isfile(garmin_file):
-        stat = os.stat(garmin_file)
-        garmin = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(stat.st_mtime))
-    zwift = None
-    zwift_file = os.path.join(profile_dir, 'zwift_credentials.bin')
-    if os.path.isfile(zwift_file):
-        stat = os.stat(zwift_file)
-        zwift = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(stat.st_mtime))
-
-    return render_template("upload.html", username=current_user.username, profile=profile, name=name, token=token, garmin=garmin, zwift=zwift)
+    achievements = None
+    achievements_file = os.path.join(profile_dir, 'achievements.bin')
+    if os.path.isfile(achievements_file):
+        stat = os.stat(achievements_file)
+        achievements = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(stat.st_mtime))
+    token = os.path.isfile(os.path.join(profile_dir, 'strava_token.txt'))
+    return render_template("settings.html", username=current_user.username, profile=profile, achievements=achievements, token=token)
 
 
-@app.route("/download/profile.bin", methods=["GET"])
+@app.route("/download/<filename>", methods=["GET"])
 @login_required
-def download_profile():
-    profile_file = os.path.join(STORAGE_DIR, str(current_user.player_id), 'profile.bin')
-    if os.path.isfile(profile_file):
-        return send_file(profile_file)
+def download(filename):
+    file = os.path.join(STORAGE_DIR, str(current_user.player_id), filename)
+    if os.path.isfile(file):
+        return send_file(file)
 
 @app.route("/download/<int:player_id>/avatarLarge.jpg", methods=["GET"])
 def download_avatarLarge(player_id):
@@ -892,14 +970,34 @@ def download_avatarLarge(player_id):
 @login_required
 def delete(filename):
     player_id = current_user.player_id
-    if filename not in ['profile.bin', 'strava_token.txt', 'garmin_credentials.bin', 'zwift_credentials.bin']:
+    credentials = ['garmin_credentials.bin', 'zwift_credentials.bin', 'intervals_credentials.bin']
+    if filename not in ['profile.bin', 'achievements.bin', 'strava_token.txt'] and filename not in credentials:
         return '', 403
     profile_dir = os.path.join(STORAGE_DIR, str(player_id))
     delete_file = os.path.join(profile_dir, filename)
     if os.path.isfile(delete_file):
         os.remove("%s" % delete_file)
-    return redirect(url_for('upload', username=current_user))
+    if filename in credentials:
+        flash("Credentials removed.")
+    return redirect(url_for('settings', username=current_user.username))
 
+@app.route("/power_curves/<username>", methods=["GET", "POST"])
+@login_required
+def power_curves(username):
+    if request.method == "POST":
+        player_id = current_user.player_id
+        PowerCurve.query.filter_by(player_id=player_id).delete()
+        db.session.commit()
+        if request.form.get('create'):
+            fit_dir = os.path.join(STORAGE_DIR, str(player_id), 'fit')
+            if os.path.isdir(fit_dir):
+                for fit_file in os.listdir(fit_dir):
+                    create_power_curve(player_id, os.path.join(fit_dir, fit_file))
+            flash("Power curves created.")
+        else:
+            flash("Power curves deleted.")
+        return redirect(url_for('settings', username=current_user.username))
+    return render_template("power_curves.html", username=current_user.username)
 
 @app.route("/logout/<username>")
 @login_required
@@ -913,7 +1011,8 @@ def logout(username):
 def insert_protobuf_into_db(table_name, msg, exclude_fields=[]):
     msg_dict = MessageToDict(msg, preserving_proto_field_name=True, use_integers_for_enums=True)
     for key in exclude_fields:
-        del msg_dict[key]
+        if key in msg_dict:
+            del msg_dict[key]
     if 'id' in msg_dict:
         del msg_dict['id']
     row = table_name(**msg_dict)
@@ -925,7 +1024,8 @@ def insert_protobuf_into_db(table_name, msg, exclude_fields=[]):
 def update_protobuf_in_db(table_name, msg, id, exclude_fields=[]):
     msg_dict = MessageToDict(msg, preserving_proto_field_name=True, use_integers_for_enums=True)
     for key in exclude_fields:
-        del msg_dict[key]
+        if key in msg_dict:
+            del msg_dict[key]
     table_name.query.filter_by(id=id).update(msg_dict)
     db.session.commit()
 
@@ -961,6 +1061,7 @@ def api_eventfeed():
 @app.route('/api/campaign/profile/campaigns', methods=['GET'])
 @app.route('/api/announcements/active', methods=['GET'])
 @app.route('/api/recommendation/profile', methods=['GET'])
+@app.route('/api/recommendations/recommendation', methods=['GET'])
 def api_empty_arrays():
     return jsonify([])
 
@@ -970,34 +1071,32 @@ def activity_moving_time(activity):
     except:
         return 0
 
-def activity_protobuf_to_json(activity):
+def activity_row_to_json(activity, details=False):
     profile = get_partial_profile(activity.player_id)
-    return {"id":activity.id,"profile":{"id":str(activity.player_id),"firstName":profile.first_name,"lastName":profile.last_name, \
-    "imageSrc":profile.imageSrc,"approvalRequired":None}, \
-    "worldId":activity.course_id,"name":activity.name,"sport":str_sport(activity.sport),"startDate":activity.start_date, \
-    "endDate":activity.end_date,"distanceInMeters":activity.distanceInMeters, \
-    "totalElevation":activity.total_elevation,"calories":activity.calories,"primaryImageUrl":"", \
-    "feedImageThumbnailUrl":"", \
-    "lastSaveDate":activity.date,"movingTimeInMs":activity_moving_time(activity), \
-    "avgSpeedInMetersPerSecond":activity.avg_speed,"activityRideOnCount":0,"activityCommentCount":0,"privacy":"PUBLIC", \
-    "eventId":None,"rideOnGiven":False,"id_str":str(activity.id)}
+    data = {"id":activity.id,"profile":{"id":str(activity.player_id),"firstName":profile.first_name,"lastName":profile.last_name,
+        "imageSrc":profile.imageSrc,"approvalRequired":None},"worldId":activity.course_id,"name":activity.name,"sport":str_sport(activity.sport),
+        "startDate":activity.start_date,"endDate":activity.end_date,"distanceInMeters":activity.distanceInMeters,
+        "totalElevation":activity.total_elevation,"calories":activity.calories,"primaryImageUrl":"","feedImageThumbnailUrl":"",
+        "lastSaveDate":activity.date,"movingTimeInMs":activity_moving_time(activity),"avgSpeedInMetersPerSecond":activity.avg_speed,
+        "activityRideOnCount":0,"activityCommentCount":0,"privacy":"PUBLIC","eventId":None,"rideOnGiven":False,"id_str":str(activity.id)}
+    if details:
+        extra_data = {"avgWatts":activity.avg_watts,"maxWatts":activity.max_watts,"avgHeartRate":activity.avg_heart_rate,
+            "maxHeartRate":activity.max_heart_rate,"avgCadenceInRotationsPerMinute":activity.avg_cadence,
+            "maxCadenceInRotationsPerMinute":activity.max_cadence,"maxSpeedInMetersPerSecond":activity.max_speed}
+        data.update(extra_data)
+    return data
 
-def select_activities_json(player_id, limit):
+def select_activities_json(player_id, limit, start_after=None):
+    filters = [Activity.distanceInMeters > 100]
+    if player_id:
+        filters.append(Activity.player_id == player_id)
+    if start_after:
+        filters.append(Activity.id < int(start_after))
+    rows = Activity.query.filter(*filters).order_by(Activity.date.desc()).limit(limit)
     ret = []
-    if limit > 0:
-        activities = activity_pb2.ActivityList()
-        stmt = sqlalchemy.text("SELECT * FROM activity WHERE player_id = :p ORDER BY date DESC LIMIT :l")
-        rows = db.session.execute(stmt, {"p": player_id, "l": limit}).mappings()
-        allow_empty_end_date = True
-        for row in rows:
-            activity = activities.activities.add()
-            row_to_protobuf(row, activity, exclude_fields=['fit'])
-            if activity.end_date == "":
-                if allow_empty_end_date:
-                    allow_empty_end_date = False
-                else:
-                    continue
-            ret.append(activity_protobuf_to_json(activity))
+    for row in rows:
+        if row.end_date:
+            ret.append(activity_row_to_json(row))
     return ret
 
 @app.route('/api/activity-feed/feed/', methods=['GET'])
@@ -1006,11 +1105,94 @@ def select_activities_json(player_id, limit):
 def api_activity_feed():
     limit = int(request.args.get('limit'))
     feed_type = request.args.get('feedType')
+    start_after = request.args.get('start_after_activity_id')
     if feed_type == 'JUST_ME' or feed_type == 'PREVIEW': #what is the difference here?
-        ret = select_activities_json(current_user.player_id, limit)
-    else: # todo: FAVORITES, FOLLOWEES
-        ret = []
+        profile_id = current_user.player_id
+    elif feed_type == 'OTHER_PROFILE':
+        profile_id = int(request.args.get('profile_id'))
+    else: # todo: FAVORITES, FOLLOWEES (showing all for now)
+        profile_id = None
+    ret = select_activities_json(profile_id, limit, start_after)
     return jsonify(ret)
+
+def create_activity_file(fit_file, small_file, full_file=None):
+    data = {"powerInWatts": [], "cadencePerMin": [], "heartRate": [], "distanceInCm": [], "speedInCmPerSec": [], "timeInSec": [], "altitudeInCm": [], "latlng": []}
+    start_time = 0
+    with fitdecode.FitReader(fit_file) as fit:
+        for frame in fit:
+            if frame.frame_type == fitdecode.FIT_FRAME_DATA and frame.name == 'record':
+                power = cadence = heart_rate = distance = speed = time = altitude = position_lat = position_long = None
+                for f in frame.fields:
+                    if f.name == "power" and f.value is not None: power = int(f.value)
+                    elif f.name == "cadence" and f.value is not None: cadence = int(f.value)
+                    elif f.name == "heart_rate" and f.value is not None: heart_rate = int(f.value)
+                    elif f.name == "distance" and f.value is not None: distance = int(f.value * 100)
+                    elif f.name == "speed" and f.value is not None: speed = int(f.value * 100)
+                    elif f.name == "timestamp" and f.value is not None:
+                        timestamp = int(f.value.timestamp())
+                        if start_time == 0: start_time = timestamp
+                        time = timestamp - start_time
+                    elif f.name == "altitude" and f.value is not None: altitude = int(f.value * 100)
+                    elif f.name == "position_lat" and f.value is not None: position_lat = round(f.value / 11930465, 6)
+                    elif f.name == "position_long" and f.value is not None: position_long = round(f.value / 11930465, 6)
+                if None not in {power, cadence, heart_rate, distance, speed, time, altitude, position_lat, position_long}:
+                    data["powerInWatts"].append(power)
+                    data["cadencePerMin"].append(cadence)
+                    data["heartRate"].append(heart_rate)
+                    data["distanceInCm"].append(distance)
+                    data["speedInCmPerSec"].append(speed)
+                    data["timeInSec"].append(time)
+                    data["altitudeInCm"].append(altitude)
+                    data["latlng"].append([position_lat, position_long])
+    if data["powerInWatts"]:
+        if full_file:
+            with open(full_file, 'w') as f:
+                json.dump(data, f)
+        step = len(data["powerInWatts"]) // 1000
+        if step > 1:
+            for d in data:
+                data[d] = data[d][::step]
+        with open(small_file, 'w') as f:
+            json.dump(data, f)
+
+@app.route('/api/activities/<int:activity_id>', methods=['GET'])
+@jwt_to_session_cookie
+@login_required
+def api_activities(activity_id):
+    row = Activity.query.filter_by(id=activity_id).first()
+    if row:
+        activity = activity_row_to_json(row, True)
+        activities_dir = '%s/activities' % STORAGE_DIR
+        try:
+            if not os.path.isdir(activities_dir):
+                os.makedirs(activities_dir)
+        except IOError as e:
+            logger.error("failed to create activities dir (%s):  %s", activities_dir, str(e))
+            return '', 400
+        fit_file = '%s/%s/fit/%s - %s' % (STORAGE_DIR, row.player_id, row.id, row.fit_filename)
+        # fullDataUrl is never fetched, creating only downsampled file
+        file = ActivityFile.query.filter_by(activity_id=row.id, full=0).first()
+        if not file and os.path.isfile(fit_file):
+            file = ActivityFile(activity_id=row.id, full=0)
+            db.session.add(file)
+            db.session.commit()
+        if file:
+            activity_file = '%s/%s' % (activities_dir, file.id)
+            if not os.path.isfile(activity_file) and os.path.isfile(fit_file):
+                try:
+                    create_activity_file(fit_file, activity_file)
+                except Exception as exc:
+                    logger.warning('create_activity_file: %s' % repr(exc))
+            if os.path.isfile(activity_file):
+                url = 'https://us-or-rly101.zwift.com/api/activities/%s/file/%s' % (row.id, file.id)
+                data = {"fitnessData": {"status": "AVAILABLE", "fullDataUrl": url, "smallDataUrl": url}}
+                activity.update(data)
+        return jsonify(activity)
+    return '', 404
+
+@app.route('/api/activities/<int:activity_id>/file/<file>')
+def api_activities_file(activity_id, file):
+    return send_from_directory('%s/activities' % STORAGE_DIR, file)
 
 @app.route('/api/auth', methods=['GET'])
 def api_auth():
@@ -1025,6 +1207,7 @@ def api_servers():
     return {"baseUrl":"https://us-or-rly101.zwift.com/relay"}
 
 @app.route('/api/clubs/club/list/my-clubs', methods=['GET'])
+@app.route('/api/clubs/club/reset-my-active-club.proto', methods=['POST'])
 @app.route('/api/clubs/club/featured', methods=['GET'])
 @app.route('/api/clubs/club', methods=['GET'])
 def api_clubs():
@@ -1036,6 +1219,9 @@ def api_clubs_club_my_clubs_summary():
 
 @app.route('/api/clubs/club/list/my-clubs.proto', methods=['GET'])
 @app.route('/api/campaign/proto/campaigns', methods=['GET'])
+@app.route('/api/campaign/public/proto/campaigns/active', methods=['GET'])
+@app.route('/api/player-playbacks/player/settings', methods=['GET', 'POST']) # TODO: private = \x08\x01 (1: 1)
+@app.route('/api/scoring/current', methods=['GET'])
 def api_proto_empty():
     return '', 200
 
@@ -1122,18 +1308,14 @@ def api_per_session_info():
     return info.SerializeToString(), 200
 
 def get_events(limit, sport):
-    events_list = [('City and the Sgurr', 4107749591, 17),
-                   ('Glasgow Crit Circuit', 3765339356, 17),
-                   ('Loch Loop', 742057576, 17),
-                   ('Rolling Highlands', 46799750, 17),
-                   ('The Muckle Yin', 3662705581, 17),
-                   ('2022 Bambino Fondo', 3368626651, 6),
+    events_list = [('2022 Bambino Fondo', 3368626651, 6),
                    ('2022 Medio Fondo', 2900074211, 6),
                    ('2022 Gran Fondo', 1327147942, 6),
                    ('Alpe du Zwift Downhill', 1480439148, 6),
                    ('Bologna TT', 2843604888, 10),
                    ('Crit City', 947394567, 12),
                    ('Crit City Reverse', 2875658892, 12),
+                   ('France Classic Fondo', 2136907048, 14),
                    ('Gravel Mountain', 3687150686, 16),
                    ('Gravel Mountain Reverse', 2956533021, 16),
                    ('Neokyo Crit', 1127056801, 13),
@@ -1354,7 +1536,7 @@ def api_zfiles_delete(file_id):
     try:
         os.remove(os.path.join(STORAGE_DIR, str(row.player_id), row.folder, quote(row.filename, safe=' ')))
     except Exception as exc:
-        logger.warn('api_zfiles_delete: %s' % repr(exc))
+        logger.warning('api_zfiles_delete: %s' % repr(exc))
     db.session.delete(row)
     db.session.commit()
     return '', 200
@@ -1365,8 +1547,6 @@ def api_zfiles_delete(file_id):
 def custom_style(filename):
     return send_from_directory('%s/cdn/style' % SCRIPT_DIR, filename)
 
-
-# Launcher files are requested over https on macOS
 @app.route('/static/web/launcher/<path:filename>')
 def static_web_launcher(filename):
     return send_from_directory('%s/cdn/static/web/launcher' % SCRIPT_DIR, filename)
@@ -1394,7 +1574,7 @@ def age(dob):
     return years
 
 def jsf(obj, field, deflt = None):
-    if(obj.HasField(field)):
+    if obj.HasField(field):
         return getattr(obj, field)
     return deflt
 
@@ -1422,32 +1602,24 @@ def copyAttributes(jprofile, jprofileFull, src):
     jprofile[src] = dest
 
 def powerSourceModelToStr(val):
-    if (val == 1):
+    if val == 1:
         return "Power Meter"
     else:
         return "zPower"
 
 def privacy(profile):
     privacy_bits = jsf(profile, 'privacy_bits', 0)
-    return {"approvalRequired": bool(privacy_bits & 1), "displayWeight": bool(privacy_bits & 4), "minor": bool(privacy_bits & 2), "privateMessaging": bool(privacy_bits & 8), "defaultFitnessDataPrivacy": bool(privacy_bits & 16), 
-"suppressFollowerNotification": bool(privacy_bits & 32), "displayAge": not bool(privacy_bits & 64), "defaultActivityPrivacy": profile_pb2.ActivityPrivacyType.Name(jsv0(profile, 'default_activity_privacy'))}
+    return {"approvalRequired": bool(privacy_bits & 1), "displayWeight": bool(privacy_bits & 4), "minor": bool(privacy_bits & 2), "privateMessaging": bool(privacy_bits & 8), "defaultFitnessDataPrivacy": bool(privacy_bits & 16),
+        "suppressFollowerNotification": bool(privacy_bits & 32), "displayAge": not bool(privacy_bits & 64), "defaultActivityPrivacy": profile_pb2.ActivityPrivacyType.Name(jsv0(profile, 'default_activity_privacy'))}
 
 def bikeFrameToStr(val):
-    item = GD.find("./BIKEFRAMES/BIKEFRAME[@signature='%s']" % val)
-    if item is not None:
-        return item.get('name')
+    if val in GD['bikeframes']:
+        return GD['bikeframes'][val]
     return "---"
 
 def do_api_profiles(profile_id, is_json):
-    profile_dir = '%s/%s' % (STORAGE_DIR, profile_id)
-    try:
-        if not os.path.isdir(profile_dir):
-            os.makedirs(profile_dir)
-    except IOError as e:
-        logger.error("failed to create profile dir (%s):  %s", profile_dir, str(e))
-        return '', 500
     profile = profile_pb2.PlayerProfile()
-    profile_file = '%s/profile.bin' % profile_dir
+    profile_file = '%s/%s/profile.bin' % (STORAGE_DIR, profile_id)
     if not os.path.isfile(profile_file):
         profile.id = profile_id
         profile.email = current_user.username
@@ -1468,19 +1640,19 @@ def do_api_profiles(profile_id, is_json):
             profile.age = age(datetime.datetime.strptime(profile.dob, "%m/%d/%Y"))
         jprofileFull = MessageToDict(profile)
         jprofile = {"id": profile.id, "firstName": jsf(profile, 'first_name'), "lastName": jsf(profile, 'last_name'), "preferredLanguage": jsf(profile, 'preferred_language'), "bodyType":jsv0(profile, 'body_type'), "male": jsb1(profile, 'is_male'), 
-"imageSrc": imageSrc(profile.id), "imageSrcLarge": imageSrc(profile.id), "playerType": profile_pb2.PlayerType.Name(jsf(profile, 'player_type', 1)), "playerTypeId": jsf(profile, 'player_type', 1), "playerSubTypeId": None, 
-"emailAddress": jsf(profile, 'email'), "countryCode": jsf(profile, 'country_code'), "dob": jsf(profile, 'dob'), "countryAlpha3": "rus", "useMetric": jsb1(profile, 'use_metric'), "privacy": privacy(profile), "age": jsv0(profile, 'age'), 
-"ftp": jsf(profile, 'ftp'), "b": False, "weight": jsf(profile, 'weight_in_grams'), "connectedToStrava": jsb0(profile, 'connected_to_strava'), "connectedToTrainingPeaks": jsb0(profile, 'connected_to_training_peaks'), 
-"connectedToTodaysPlan": jsb0(profile, 'connected_to_todays_plan'), "connectedToUnderArmour": jsb0(profile, 'connected_to_under_armour'), "connectedToFitbit": jsb0(profile, 'connected_to_fitbit'), "connectedToGarmin": jsb0(profile, 'connected_to_garmin'), "height": jsf(profile, 'height_in_millimeters'), "location": "", 
-"totalExperiencePoints": jsv0(profile, 'total_xp'), "worldId": jsf(profile, 'server_realm'), "totalDistance": jsv0(profile, 'total_distance_in_meters'), "totalDistanceClimbed": jsv0(profile, 'elevation_gain_in_meters'), "totalTimeInMinutes": jsv0(profile, 'time_ridden_in_minutes'), 
-"achievementLevel": jsv0(profile, 'achievement_level'), "totalWattHours": jsv0(profile, 'total_watt_hours'), "runTime1miInSeconds": jsv0(profile, 'run_time_1mi_in_seconds'), "runTime5kmInSeconds": jsv0(profile, 'run_time_5km_in_seconds'), "runTime10kmInSeconds": jsv0(profile, 'run_time_10km_in_seconds'), 
-"runTimeHalfMarathonInSeconds": jsv0(profile, 'run_time_half_marathon_in_seconds'), "runTimeFullMarathonInSeconds": jsv0(profile, 'run_time_full_marathon_in_seconds'), "totalInKomJersey": jsv0(profile, 'total_in_kom_jersey'), "totalInSprintersJersey": jsv0(profile, 'total_in_sprinters_jersey'), 
-"totalInOrangeJersey": jsv0(profile, 'total_in_orange_jersey'), "currentActivityId": jsf(profile, 'current_activity_id'), "enrolledZwiftAcademy": jsv0(profile, 'enrolled_program') == profile.EnrolledProgram.ZWIFT_ACADEMY, "runAchievementLevel": jsv0(profile, 'run_achievement_level'), 
-"totalRunDistance": jsv0(profile, 'total_run_distance'), "totalRunTimeInMinutes": jsv0(profile, 'total_run_time_in_minutes'), "totalRunExperiencePoints": jsv0(profile, 'total_run_experience_points'), "totalRunCalories": jsv0(profile, 'total_run_calories'), "totalGold": jsv0(profile, 'total_gold_drops'), 
-"profilePropertyChanges": jprofileFull.get('propertyChanges'), "cyclingOrganization": jsf(profile, 'cycling_organization'), "userAgent": "CNL/3.13.0 (Android 11) zwift/1.0.85684 curl/7.78.0-DEV", "stravaPremium": jsb0(profile, 'strava_premium'), "profileChanges": False, "launchedGameClient": "09/19/2021 13:24:19 +0000", 
-"createdOn":"2021-09-19T13:24:17.783+0000", "likelyInGame": False, "address": None, "bt":"f97803d3-efac-4510-a17a-ef44e65d3071", "numberOfFolloweesInCommon": 0, "fundraiserId": None, "source": "Android", "origin": None, "licenseNumber": None, "bigCommerceId": None, "marketingConsent": None, "affiliate": None, 
-"avantlinkId": None, "virtualBikeModel": bikeFrameToStr(profile.bike_frame), "connectedToWithings": jsb0(profile, 'connected_to_withings'), "connectedToRuntastic": jsb0(profile, 'connected_to_runtastic'), "connectedToZwiftPower": False, "powerSourceType": "Power Source", 
-"powerSourceModel": powerSourceModelToStr(profile.power_source_model), "riding": False, "location": "", "publicId": "5a72e9b1-239f-435e-8757-af9467336b40", "mixpanelDistinctId": "21304417-af2d-4c9b-8543-8ba7c0500e84"}
+            "imageSrc": imageSrc(profile.id), "imageSrcLarge": imageSrc(profile.id), "playerType": profile_pb2.PlayerType.Name(jsf(profile, 'player_type', 1)), "playerTypeId": jsf(profile, 'player_type', 1), "playerSubTypeId": None, 
+            "emailAddress": jsf(profile, 'email'), "countryCode": jsf(profile, 'country_code'), "dob": jsf(profile, 'dob'), "countryAlpha3": "rus", "useMetric": jsb1(profile, 'use_metric'), "privacy": privacy(profile), "age": jsv0(profile, 'age'), 
+            "ftp": jsf(profile, 'ftp'), "b": False, "weight": jsf(profile, 'weight_in_grams'), "connectedToStrava": jsb0(profile, 'connected_to_strava'), "connectedToTrainingPeaks": jsb0(profile, 'connected_to_training_peaks'), 
+            "connectedToTodaysPlan": jsb0(profile, 'connected_to_todays_plan'), "connectedToUnderArmour": jsb0(profile, 'connected_to_under_armour'), "connectedToFitbit": jsb0(profile, 'connected_to_fitbit'), "connectedToGarmin": jsb0(profile, 'connected_to_garmin'), "height": jsf(profile, 'height_in_millimeters'), "location": "", 
+            "totalExperiencePoints": jsv0(profile, 'total_xp'), "worldId": jsf(profile, 'server_realm'), "totalDistance": jsv0(profile, 'total_distance_in_meters'), "totalDistanceClimbed": jsv0(profile, 'elevation_gain_in_meters'), "totalTimeInMinutes": jsv0(profile, 'time_ridden_in_minutes'), 
+            "achievementLevel": jsv0(profile, 'achievement_level'), "totalWattHours": jsv0(profile, 'total_watt_hours'), "runTime1miInSeconds": jsv0(profile, 'run_time_1mi_in_seconds'), "runTime5kmInSeconds": jsv0(profile, 'run_time_5km_in_seconds'), "runTime10kmInSeconds": jsv0(profile, 'run_time_10km_in_seconds'), 
+            "runTimeHalfMarathonInSeconds": jsv0(profile, 'run_time_half_marathon_in_seconds'), "runTimeFullMarathonInSeconds": jsv0(profile, 'run_time_full_marathon_in_seconds'), "totalInKomJersey": jsv0(profile, 'total_in_kom_jersey'), "totalInSprintersJersey": jsv0(profile, 'total_in_sprinters_jersey'), 
+            "totalInOrangeJersey": jsv0(profile, 'total_in_orange_jersey'), "currentActivityId": jsf(profile, 'current_activity_id'), "enrolledZwiftAcademy": jsv0(profile, 'enrolled_program') == profile.EnrolledProgram.ZWIFT_ACADEMY, "runAchievementLevel": jsv0(profile, 'run_achievement_level'), 
+            "totalRunDistance": jsv0(profile, 'total_run_distance'), "totalRunTimeInMinutes": jsv0(profile, 'total_run_time_in_minutes'), "totalRunExperiencePoints": jsv0(profile, 'total_run_experience_points'), "totalRunCalories": jsv0(profile, 'total_run_calories'), "totalGold": jsv0(profile, 'total_gold_drops'), 
+            "profilePropertyChanges": jprofileFull.get('propertyChanges'), "cyclingOrganization": jsf(profile, 'cycling_organization'), "userAgent": "CNL/3.13.0 (Android 11) zwift/1.0.85684 curl/7.78.0-DEV", "stravaPremium": jsb0(profile, 'strava_premium'), "profileChanges": False, "launchedGameClient": "09/19/2021 13:24:19 +0000", 
+            "createdOn":"2021-09-19T13:24:17.783+0000", "likelyInGame": False, "address": None, "bt":"f97803d3-efac-4510-a17a-ef44e65d3071", "numberOfFolloweesInCommon": 0, "fundraiserId": None, "source": "Android", "origin": None, "licenseNumber": None, "bigCommerceId": None, "marketingConsent": None, "affiliate": None, 
+            "avantlinkId": None, "virtualBikeModel": bikeFrameToStr(profile.bike_frame), "connectedToWithings": jsb0(profile, 'connected_to_withings'), "connectedToRuntastic": jsb0(profile, 'connected_to_runtastic'), "connectedToZwiftPower": False, "powerSourceType": "Power Source", 
+            "powerSourceModel": powerSourceModelToStr(profile.power_source_model), "riding": False, "location": "", "publicId": "5a72e9b1-239f-435e-8757-af9467336b40", "mixpanelDistinctId": "21304417-af2d-4c9b-8543-8ba7c0500e84"}
         copyAttributes(jprofile, jprofileFull, 'publicAttributes')
         copyAttributes(jprofile, jprofileFull, 'privateAttributes')
         return jsonify(jprofile)
@@ -1491,7 +1663,7 @@ def do_api_profiles(profile_id, is_json):
 @jwt_to_session_cookie
 @login_required
 def api_profiles_me():
-    if(request.headers['Source'] == "zwift-companion"):
+    if request.headers['Source'] == "zwift-companion":
         return do_api_profiles(current_user.player_id, True)
     else:
         return do_api_profiles(current_user.player_id, False)
@@ -1528,25 +1700,25 @@ def api_profiles_id_privacy(player_id):
     with open(profile_file, 'rb') as fd:
         profile.ParseFromString(fd.read())
     profile.privacy_bits = 0
-    if (jp["approvalRequired"]):
+    if jp["approvalRequired"]:
         profile.privacy_bits += 1
-    if ("displayWeight" in jp and jp["displayWeight"]):
+    if "displayWeight" in jp and jp["displayWeight"]:
         profile.privacy_bits += 4
-    if ("minor" in jp and jp["minor"]):
+    if "minor" in jp and jp["minor"]:
         profile.privacy_bits += 2
-    if (jp["privateMessaging"]):
+    if jp["privateMessaging"]:
         profile.privacy_bits += 8
-    if (jp["defaultFitnessDataPrivacy"]):
+    if jp["defaultFitnessDataPrivacy"]:
         profile.privacy_bits += 16
-    if ("suppressFollowerNotification" in jp and jp["suppressFollowerNotification"]):
+    if "suppressFollowerNotification" in jp and jp["suppressFollowerNotification"]:
         profile.privacy_bits += 32
-    if (not jp["displayAge"]):
+    if not jp["displayAge"]:
         profile.privacy_bits += 64
     defaultActivityPrivacy = jp["defaultActivityPrivacy"]
     profile.default_activity_privacy = 0 #PUBLIC
-    if(defaultActivityPrivacy == "PRIVATE"):
+    if defaultActivityPrivacy == "PRIVATE":
         profile.default_activity_privacy = 1
-    if(defaultActivityPrivacy == "FRIENDS"):
+    if defaultActivityPrivacy == "FRIENDS":
         profile.default_activity_privacy = 2
     with open(profile_file, 'wb') as fd:
         fd.write(profile.SerializeToString())
@@ -1564,8 +1736,8 @@ def api_profiles_followers(m_player_id, t_player_id=0):
         player_id = row[0]
         profile = get_partial_profile(player_id)
         #all users are following favourites of this user (temp decision for small crouds)
-        json_data_list.append({"id":0,"followerId":player_id,"followeeId":m_player_id,"status":"IS_FOLLOWING","isFolloweeFavoriteOfFollower":True, \
-            "followerProfile":{"id":player_id,"firstName":row[1],"lastName":row[2],"imageSrc":imageSrc(player_id),"imageSrcLarge":imageSrc(player_id),"countryCode":profile.country_code}, \
+        json_data_list.append({"id":0,"followerId":player_id,"followeeId":m_player_id,"status":"IS_FOLLOWING","isFolloweeFavoriteOfFollower":True,
+            "followerProfile":{"id":player_id,"firstName":row[1],"lastName":row[2],"imageSrc":imageSrc(player_id),"imageSrcLarge":imageSrc(player_id),"countryCode":profile.country_code},
             "followeeProfile":None})
     return jsonify(json_data_list)
 
@@ -1585,6 +1757,10 @@ def api_search_profiles():
         profile = get_partial_profile(player_id)
         json_data_list.append({"id": player_id, "firstName": row[1], "lastName": row[2], "imageSrc": imageSrc(player_id), "imageSrcLarge": imageSrc(player_id), "countryCode": profile.country_code})
     return jsonify(json_data_list)
+
+@app.route('/api/profiles/<int:player_id>/membership-status', methods=['GET'])
+def api_profiles_membership_status(player_id):
+    return jsonify({"status":"active"}) # {"title":"25km","description":"renews.1677628800000","status":"active","upcoming":null,"subscription":null,"promotions":[],"hasStackedPromos":false,"startedPortability":false,"grandfathered":false,"grandfatheringGroup":null,"freeTrialKmLeft":18}
 
 @app.route('/api/profiles/<int:player_id>/statistics', methods=['GET'])
 def api_profiles_id_statistics(player_id):
@@ -1654,6 +1830,8 @@ def api_profiles_me_id(player_id):
 def api_profiles_id(player_id):
     if not request.stream:
         return '', 400
+    if player_id == 0:
+        return '', 400 # can't return 401 to /api/profiles/0/in-game-fields (causes issues in following requests)
     if current_user.player_id != player_id:
         return '', 401
     stream = request.stream.read()
@@ -1696,22 +1874,14 @@ def api_profiles_activities(player_id):
 
     # request.method == 'GET'
     activities = activity_pb2.ActivityList()
-    rows = db.session.execute(sqlalchemy.text("SELECT * FROM activity WHERE player_id = :p"), {"p": player_id}).mappings()
-    should_remove = list()
+    rows = db.session.execute(sqlalchemy.text("SELECT * FROM activity WHERE player_id = :p AND date > date('now', '-1 month')"), {"p": player_id}).mappings()
     for row in rows:
         activity = activities.activities.add()
         row_to_protobuf(row, activity, exclude_fields=['fit'])
-        #Remove activities with less than 100m distance
-        if activity.distanceInMeters < 100:
-            should_remove.append(activity)
-    for a in should_remove:
-        db.session.execute(sqlalchemy.text("DELETE FROM activity WHERE id = :i"), {"i": a.id})
-        db.session.commit()
-        activities.activities.remove(a)
     return activities.SerializeToString(), 200
 
-def time_since(state):
-    seconds = (world_time() - state.worldTime) // 1000
+def time_since(date):
+    seconds = (world_time() - date) // 1000
     interval = seconds // 31536000
     if interval > 0: interval_type = 'year'
     else:
@@ -1734,17 +1904,17 @@ def time_since(state):
     return '%s %s ago' % (interval, interval_type)
 
 def random_profile(p):
-    p.ride_helmet_type = int(random.choice(GD.findall("./HEADGEARS/HEADGEAR")).get('signature'))
-    p.glasses_type = int(random.choice(GD.findall("./GLASSES/GLASS")).get('signature'))
-    p.ride_shoes_type = int(random.choice(GD.findall("./BIKESHOES/BIKESHOE")).get('signature'))
-    p.ride_socks_type = int(random.choice(GD.findall("./SOCKS/SOCK")).get('signature'))
-    p.ride_jersey = int(random.choice(GD.findall("./JERSEYS/JERSEY")).get('signature'))
-    p.bike_wheel_front = int(random.choice(GD.findall("./BIKEFRONTWHEELS/BIKEFRONTWHEEL")).get('signature'))
-    p.bike_wheel_rear = int(random.choice(GD.findall("./BIKEREARWHEELS/BIKEREARWHEEL")).get('signature'))
-    p.bike_frame = int(random.choice(GD.findall("./BIKEFRAMES/BIKEFRAME")).get('signature'))
-    p.run_shirt_type = int(random.choice(GD.findall("./RUNSHIRTS/RUNSHIRT")).get('signature'))
-    p.run_shorts_type = int(random.choice(GD.findall("./RUNSHORTS/RUNSHORT")).get('signature'))
-    p.run_shoes_type = int(random.choice(GD.findall("./RUNSHOES/RUNSHOE")).get('signature'))
+    p.ride_helmet_type = random.choice(GD['headgears'])
+    p.glasses_type = random.choice(GD['glasses'])
+    p.ride_shoes_type = random.choice(GD['bikeshoes'])
+    p.ride_socks_type = random.choice(GD['socks'])
+    p.ride_jersey = random.choice(GD['jerseys'])
+    p.bike_wheel_front = random.choice(GD['bikefrontwheels'])
+    p.bike_wheel_rear = random.choice(GD['bikerearwheels'])
+    p.bike_frame = random.choice(list(GD['bikeframes'].keys()))
+    p.run_shirt_type = random.choice(GD['runshirts'])
+    p.run_shorts_type = random.choice(GD['runshorts'])
+    p.run_shoes_type = random.choice(GD['runshoes'])
     return p
 
 @app.route('/api/profiles', methods=['GET'])
@@ -1765,7 +1935,7 @@ def api_profiles():
                     p.CopyFrom(random_profile(profile))
                     p.id = p_id
                     p.first_name = ''
-                    p.last_name = time_since(global_ghosts[player_id].play[ghostId-1].states[0])
+                    p.last_name = time_since(global_ghosts[player_id].play[ghostId-1].date)
                     p.country_code = 0
         else:
             if p_id in global_pace_partners.keys():
@@ -1779,7 +1949,7 @@ def api_profiles():
                         with open(profile_file, 'rb') as fd:
                             profile.ParseFromString(fd.read())
                     except Exception as exc:
-                        logger.warn('api_profiles: %s' % repr(exc))
+                        logger.warning('api_profiles: %s' % repr(exc))
             profiles.profiles.append(profile)
     return profiles.SerializeToString(), 200
 
@@ -1795,31 +1965,34 @@ def player_playbacks_player_playback():
         logger.error("failed to create playbacks dir (%s):  %s", pb_dir, str(e))
         return '', 400
     stream = request.stream.read()
-    pb = playback_pb2.Playback()
+    pb = playback_pb2.PlaybackData()
     pb.ParseFromString(stream)
     if pb.time == 0:
         return '', 200
     new_uuid = str(uuid.uuid4())
-    new_pb = Playback(player_id=current_user.player_id, uuid=new_uuid, segment_id=pb.segment_id, time=pb.time, world_time=pb.world_time)
+    new_pb = Playback(player_id=current_user.player_id, uuid=new_uuid, segment_id=pb.segment_id, time=pb.time, world_time=pb.world_time, type=pb.type)
     db.session.add(new_pb)
     db.session.commit()
     with open('%s/%s.playback' % (pb_dir, new_uuid), 'wb') as f:
         f.write(stream)
-    return '', 200
+    return new_uuid, 201
 
-@app.route('/api/player-playbacks/player/me/playbacks/<segment_id>/<option>', methods=['GET'])
+@app.route('/api/player-playbacks/player/<player_id>/playbacks/<segment_id>/<option>', methods=['GET'])
 @jwt_to_session_cookie
 @login_required
-def player_playbacks_player_me_playbacks(segment_id, option):
+def player_playbacks_player_playbacks(player_id, segment_id, option):
+    if player_id == 'me':
+        player_id = current_user.player_id
     segment_id = int(segment_id)
     after = request.args.get('after')
     before = request.args.get('before')
-    query = "SELECT * FROM playback WHERE player_id = :p AND segment_id = :s"
-    args = {"p": current_user.player_id, "s": segment_id}
-    if after:
+    pb_type = playback_pb2.PlaybackType.Value(request.args.get('type'))
+    query = "SELECT * FROM playback WHERE player_id = :p AND segment_id = :s AND type = :t"
+    args = {"p": player_id, "s": segment_id, "t": pb_type}
+    if after != '18446744065933551616':
         query += " AND world_time > :a"
         args.update({"a": after})
-    if before:
+    if before != '0':
         query += " AND world_time < :b"
         args.update({"b": before})
     if option == 'pr':
@@ -1829,31 +2002,21 @@ def player_playbacks_player_me_playbacks(segment_id, option):
     row = db.session.execute(sqlalchemy.text(query), args).first()
     if not row:
         return '', 200
-    pbr = playback_pb2.PlaybackResponse()
+    pbr = playback_pb2.PlaybackMetadata()
     pbr.uuid = row.uuid
     pbr.segment_id = row.segment_id
     pbr.time = row.time
     pbr.world_time = row.world_time
     pbr.url = 'https://cdn.zwift.com/player-playback/playbacks/%s.playback' % row.uuid
+    if pb_type:
+        pbr.type = pb_type
     return pbr.SerializeToString(), 200
 
 @app.route('/player-playback/playbacks/<path:filename>')
 def player_playback_playbacks(filename):
     return send_from_directory('%s/playbacks' % STORAGE_DIR, filename)
 
-@app.route('/route-results', methods=['POST'])
-@jwt_to_session_cookie
-@login_required
-def route_results():
-    return '', 200
-
 def strava_upload(player_id, activity):
-    try:
-        from stravalib.client import Client
-    except ImportError as exc:
-        logger.warn('stravalib: %s' % repr(exc))
-        logger.warn("stravalib is not installed. Skipping Strava upload attempt.")
-        return
     profile_dir = '%s/%s' % (STORAGE_DIR, player_id)
     strava_token = '%s/strava_token.txt' % profile_dir
     if not os.path.exists(strava_token):
@@ -1868,7 +2031,7 @@ def strava_upload(player_id, activity):
             refresh_token = f.readline().rstrip('\r\n')
             expires_at = f.readline().rstrip('\r\n')
     except Exception as exc:
-        logger.warn("Failed to read %s. Skipping Strava upload attempt. %s" % (strava_token, repr(exc)))
+        logger.warning("Failed to read %s. Skipping Strava upload attempt: %s" % (strava_token, repr(exc)))
         return
     try:
         if get_utc_time() > int(expires_at):
@@ -1881,21 +2044,21 @@ def strava_upload(player_id, activity):
                 f.write(refresh_response['refresh_token'] + '\n')
                 f.write(str(refresh_response['expires_at']) + '\n')
     except Exception as exc:
-        logger.warn("Failed to refresh token. Skipping Strava upload attempt: %s." % repr(exc))
+        logger.warning("Failed to refresh token. Skipping Strava upload attempt: %s" % repr(exc))
         return
     try:
         # See if there's internet to upload to Strava
         strava.upload_activity(BytesIO(activity.fit), data_type='fit', name=activity.name)
         # XXX: assume the upload succeeds on strava's end. not checking on it.
     except Exception as exc:
-        logger.warn("Strava upload failed. No internet? %s" % repr(exc))
+        logger.warning("Strava upload failed. No internet? %s" % repr(exc))
 
 
 def garmin_upload(player_id, activity):
     try:
         from garmin_uploader.workflow import Workflow
     except ImportError as exc:
-        logger.warn("garmin_uploader is not installed. Skipping Garmin upload attempt. %s" % repr(exc))
+        logger.warning("garmin_uploader is not installed. Skipping Garmin upload attempt: %s" % repr(exc))
         return
     profile_dir = '%s/%s' % (STORAGE_DIR, player_id)
     garmin_credentials = '%s/garmin_credentials' % profile_dir
@@ -1908,36 +2071,26 @@ def garmin_upload(player_id, activity):
         return
     try:
         if garmin_credentials.endswith('.bin'):
-            with open(garmin_credentials, 'rb') as f:
-                iv = f.read(16)
-                ciphered_text = f.read()
-                cipher_suite = AES.new(credentials_key, AES.MODE_CFB, iv=iv)
-                unciphered_text = cipher_suite.decrypt(ciphered_text).decode('UTF-8')
-                split_credentials = unciphered_text.splitlines()
-                username = split_credentials[0]
-                password = split_credentials[1]
+            cred = decrypt_credentials(garmin_credentials)
+            username = cred[0]
+            password = cred[1]
         else:
             with open(garmin_credentials) as f:
                 username = f.readline().rstrip('\r\n')
                 password = f.readline().rstrip('\r\n')
     except Exception as exc:
-        logger.warn("Failed to read %s. Skipping Garmin upload attempt. %s" % (garmin_credentials, repr(exc)))
+        logger.warning("Failed to read %s. Skipping Garmin upload attempt: %s" % (garmin_credentials, repr(exc)))
         return
-    try:
-        with open('%s/last_activity.fit' % profile_dir, 'wb') as f:
-            f.write(activity.fit)
-    except Exception as exc:
-        logger.warn("Failed to save fit file. Skipping Garmin upload attempt. %s" % repr(exc))
-        return
+    with open('%s/last_activity.fit' % profile_dir, 'wb') as f:
+        f.write(activity.fit)
     try:
         w = Workflow(['%s/last_activity.fit' % profile_dir], activity_name=activity.name, username=username, password=password)
         w.run()
     except Exception as exc:
-        logger.warn("Garmin upload failed. No internet? %s" % repr(exc))
+        logger.warning("Garmin upload failed. No internet? %s" % repr(exc))
 
 def runalyze_upload(player_id, activity):
-    profile_dir = '%s/%s' % (STORAGE_DIR, player_id)
-    runalyze_token = '%s/runalyze_token.txt' % profile_dir
+    runalyze_token = '%s/%s/runalyze_token.txt' % (STORAGE_DIR, player_id)
     if not os.path.exists(runalyze_token):
         logger.info("runalyze_token.txt missing, skip Runalyze activity update")
         return
@@ -1945,100 +2098,142 @@ def runalyze_upload(player_id, activity):
         with open(runalyze_token, 'r') as f:
             runtoken = f.readline().rstrip('\r\n')
     except Exception as exc:
-        logger.warn("Failed to read %s. Skipping Runalyze upload attempt." % (runalyze_token, repr(exc)))
-        return
-    try:
-        with open('%s/last_activity.fit' % profile_dir, 'wb') as f:
-            f.write(activity.fit)
-    except Exception as exc:
-        logger.warn("Failed to save fit file. Skipping Runalyze upload attempt. %s" % repr(exc))
+        logger.warning("Failed to read %s. Skipping Runalyze upload attempt: %s" % (runalyze_token, repr(exc)))
         return
     try:
         r = requests.post("https://runalyze.com/api/v1/activities/uploads",
-                          files={'file': open('%s/last_activity.fit' % profile_dir, "rb")},
-                          headers={"token": runtoken})
+                          files={'file': BytesIO(activity.fit)}, headers={"token": runtoken})
         logger.info(r.text)
     except Exception as exc:
-        logger.warn("Runalyze upload failed. No internet? %s" % repr(exc))
+        logger.warning("Runalyze upload failed. No internet? %s" % repr(exc))
+
+
+def intervals_upload(player_id, activity):
+    intervals_credentials = '%s/%s/intervals_credentials.bin' % (STORAGE_DIR, player_id)
+    if not os.path.exists(intervals_credentials):
+        logger.info("intervals_credentials.bin missing, skip Intervals.icu activity update")
+        return
+    try:
+        cred = decrypt_credentials(intervals_credentials)
+        athlete_id = cred[0]
+        api_key = cred[1]
+    except Exception as exc:
+        logger.warning("Failed to read %s. Skipping Intervals.icu upload attempt: %s" % (intervals_credentials, repr(exc)))
+        return
+    try:
+        from requests.auth import HTTPBasicAuth
+        url = 'http://intervals.icu/api/v1/athlete/%s/activities?name=%s' % (athlete_id, activity.name)
+        requests.post(url, files = {"file": BytesIO(activity.fit)}, auth = HTTPBasicAuth('API_KEY', api_key))
+    except Exception as exc:
+        logger.warning("Intervals.icu upload failed. No internet? %s" % repr(exc))
 
 
 def zwift_upload(player_id, activity):
-    profile_dir = '%s/%s' % (STORAGE_DIR, player_id)
-    zwift_credentials = '%s/zwift_credentials.bin' % profile_dir
+    zwift_credentials = '%s/%s/zwift_credentials.bin' % (STORAGE_DIR, player_id)
     if not os.path.exists(zwift_credentials):
         logger.info("zwift_credentials.bin missing, skip Zwift activity update")
         return
-    if not os.path.exists(SERVER_IP_FILE):
-        logger.info("server_ip.txt missing, skip Zwift activity update")
-        return
     try:
-        with open(zwift_credentials, 'rb') as f:
-            iv = f.read(16)
-            ciphered_text = f.read()
-            cipher_suite = AES.new(credentials_key, AES.MODE_CFB, iv=iv)
-            unciphered_text = cipher_suite.decrypt(ciphered_text).decode('UTF-8')
-            split_credentials = unciphered_text.splitlines()
-            username = split_credentials[0]
-            password = split_credentials[1]
+        cred = decrypt_credentials(zwift_credentials)
+        username = cred[0]
+        password = cred[1]
     except Exception as exc:
-        logger.warn("Failed to read %s. Skipping Zwift upload attempt. %s" % (zwift_credentials, repr(exc)))
+        logger.warning("Failed to read %s. Skipping Zwift upload attempt: %s" % (zwift_credentials, repr(exc)))
         return
-    
     try:
         session = requests.session()
-        try:
-            access_token, refresh_token = online_sync.login(session, username, password)
-            activity.player_id = online_sync.get_player_id(session, access_token)
-            res = online_sync.upload_activity(session, access_token, activity)
-            if res == 200:
-                logger.info("Zwift activity upload succesfull")
-            else:
-                logger.warn("Zwift activity upload failed:%s:" %res)
-            online_sync.logout(session, refresh_token)
-        except Exception as exc:
-            logger.warn("Error uploading activity to Zwift Server. %s" % repr(exc))
+        access_token, refresh_token = online_sync.login(session, username, password)
+        activity.player_id = online_sync.get_player_id(session, access_token)
+        new_activity = activity_pb2.Activity()
+        new_activity.CopyFrom(activity)
+        new_activity.ClearField('id')
+        new_activity.ClearField('fit')
+        activity.id = online_sync.create_activity(session, access_token, new_activity)
+        online_sync.upload_activity(session, access_token, activity)
+        online_sync.logout(session, refresh_token)
     except Exception as exc:
-        logger.warn("Zwift upload failed. No internet? %s" % repr(exc))
+        logger.warning("Zwift upload failed. No internet? %s" % repr(exc))
+
+
+def moving_average(iterable, n):
+    it = iter(iterable)
+    d = deque(islice(it, n))
+    s = sum(d)
+    for elem in it:
+        s += elem - d.popleft()
+        d.append(elem)
+        yield s // n
+
+def create_power_curve(player_id, fit_file):
+    try:
+        power_values = []
+        timestamp = int(get_utc_time())
+        with fitdecode.FitReader(fit_file) as fit:
+            for frame in fit:
+                if frame.frame_type == fitdecode.FIT_FRAME_DATA:
+                    if frame.name == 'record':
+                        p = frame.get_value('power')
+                        if p is not None: power_values.append(int(p))
+                    elif frame.name == 'activity':
+                        t = frame.get_value('timestamp')
+                        if t is not None: timestamp = int(t.timestamp())
+        if power_values:
+            for time in [5, 60, 300, 1200]:
+                averages = list(moving_average(power_values, time))
+                if averages:
+                    power = max(averages)
+                    profile = get_partial_profile(player_id)
+                    power_wkg = round(power / (profile.weight_in_grams / 1000), 2)
+                    power_curve = PowerCurve(player_id=player_id, time=str(time), power=power, power_wkg=power_wkg, timestamp=timestamp)
+                    db.session.add(power_curve)
+            db.session.commit()
+    except Exception as exc:
+        logger.warning('create_power_curve: %s' % repr(exc))
 
 
 @app.route('/api/profiles/<int:player_id>/activities/<int:activity_id>', methods=['PUT', 'DELETE'])
 @jwt_to_session_cookie
 @login_required
 def api_profiles_activities_id(player_id, activity_id):
+    if request.headers['Source'] == "zwift-companion":
+        return '', 400 # edit from ZCA is not supported yet
     if not request.stream:
         return '', 400
     if current_user.player_id != player_id:
         return '', 401
     if request.method == 'DELETE':
-        db.session.execute(sqlalchemy.text("DELETE FROM activity WHERE id = :i"), {"i": activity_id})
+        Activity.query.filter_by(id=activity_id).delete()
         db.session.commit()
         logout_player(player_id)
         return 'true', 200
+    stream = request.stream.read()
     activity = activity_pb2.Activity()
-    activity.ParseFromString(request.stream.read())
+    activity.ParseFromString(stream)
     update_protobuf_in_db(Activity, activity, activity_id, ['fit'])
-    fit_filename = '%s - %s' % (activity_id, activity.fit_filename)
-    save_fit(player_id, fit_filename, activity.fit)
 
     response = '{"id":%s}' % activity_id
     if request.args.get('upload-to-strava') != 'true':
         return response, 200
     if activity.distanceInMeters < 300:
+        Activity.query.filter_by(id=activity_id).delete()
+        db.session.commit()
+        logout_player(player_id)
         return response, 200
+
+    create_power_curve(player_id, BytesIO(activity.fit))
+    save_fit(player_id, '%s - %s' % (activity_id, activity.fit_filename), activity.fit)
     if current_user.enable_ghosts:
-        try:
-            save_ghost(quote(activity.name, safe=' '), player_id)
-        except Exception as exc:
-            logger.warn('save_ghost: %s' % repr(exc))
+        save_ghost(quote(activity.name, safe=' '), player_id)
     # For using with upload_activity
     with open('%s/%s/last_activity.bin' % (STORAGE_DIR, player_id), 'wb') as f:
-        f.write(activity.SerializeToString())
+        f.write(stream)
     # Unconditionally *try* and upload to strava and garmin since profile may
     # not be properly linked to strava/garmin (i.e. no 'upload-to-strava' call
     # will occur with these profiles).
     strava_upload(player_id, activity)
     garmin_upload(player_id, activity)
     runalyze_upload(player_id, activity)
+    intervals_upload(player_id, activity)
     zwift_upload(player_id, activity)
     logout_player(player_id)
     return response, 200
@@ -2074,14 +2269,16 @@ def api_profiles_activities_rideon(receiving_player_id):
 
 def stime_to_timestamp(stime):
     utc_offset = datetime.datetime.fromtimestamp(0) - datetime.datetime.utcfromtimestamp(0)
-    return int((datetime.datetime.strptime(stime, '%Y-%m-%dT%H:%M:%SZ') + utc_offset).timestamp())
+    try:
+        return int((datetime.datetime.strptime(stime, '%Y-%m-%dT%H:%M:%SZ') + utc_offset).timestamp())
+    except:
+        return 0
 
 def create_zca_notification(player_id, private_event, organizer):
     orm_not = Notification(event_id=private_event['id'], player_id=player_id, json='')
     db.session.add(orm_not)
     db.session.commit()
-    argString0 = json.dumps({"eventId":private_event['id'],"eventStartDate": \
-        stime_to_timestamp(private_event['eventStart']), \
+    argString0 = json.dumps({"eventId":private_event['id'],"eventStartDate":stime_to_timestamp(private_event['eventStart']),
         "otherInviteeCount":len(private_event['invitedProfileIds'])})
     n = { "activity": None, "argLong0": 0, "argLong1": 0, "argString0": argString0,
         "createdOn": str_timestamp(unix_time_millis(datetime.datetime.now())),
@@ -2110,7 +2307,8 @@ def create_zca_notification(player_id, private_event, organizer):
 def api_notifications():
     ret_notifications = []
     for row in Notification.query.filter_by(player_id=current_user.player_id):
-        ret_notifications.append(row.json)
+        if json.loads(json.loads(row.json)["argString0"])["eventStartDate"] > get_time() - 1800:
+            ret_notifications.append(row.json)
     return jsonify(ret_notifications)
 
 @app.route('/api/notifications/<int:notif_id>', methods=['PUT'])
@@ -2151,7 +2349,7 @@ def edit_private_event(player_id, meetup_id, decision):
         for i in e['eventInvites']:
             if i['invitedProfile']['id'] == player_id:
                 i['status'] = decision
-        orm_event = PrivateEvent.query.get(meetup_id)
+        orm_event = db.session.get(PrivateEvent, meetup_id)
         orm_event.json = json.dumps(e)
         db.session.commit()
     return '', 204
@@ -2194,7 +2392,7 @@ def api_private_event_edit(meetup_id):
             p_partial_profile = get_partial_profile(peer_id)
             newEventInvites.append({"invitedProfile": p_partial_profile.to_json(), "status": "PENDING"})
     org_json_pe['eventInvites'] = newEventInvites
-    PrivateEvent.query.get(meetup_id).json = json.dumps(org_json_pe)
+    db.session.get(PrivateEvent, meetup_id).json = json.dumps(org_json_pe)
     db.session.commit()
     for orm_not in Notification.query.filter_by(event_id=meetup_id):
         n = json.loads(orm_not.json)
@@ -2339,10 +2537,14 @@ def jsonPrivateEventFeedToProtobuf(jfeed):
 @jwt_to_session_cookie
 @login_required
 def api_private_event_feed():
+    start_date = int(request.args.get('start_date')) / 1000
+    if start_date == -1800: start_date += get_time() # first ZA request has start_date=-1800000
+    past_events = request.args.get('organizer_only_past_events') == 'true'
     ret = []
     for pe in ActualPrivateEvents().values():
-        ret.append(clone_and_append_social(current_user.player_id, pe))
-    if(request.headers['Accept'] == 'application/json'):
+        if stime_to_timestamp(pe['eventStart']) > start_date or (past_events and int(pe['organizerProfileId']) == current_user.player_id):
+            ret.append(clone_and_append_social(current_user.player_id, pe))
+    if request.headers['Accept'] == 'application/json':
         return jsonify(ret)
     return jsonPrivateEventFeedToProtobuf(ret).SerializeToString(), 200
 
@@ -2381,7 +2583,7 @@ def jsonPrivateEventToProtobuf(je):
 @login_required
 def api_private_event_id(event_id):
     ret = clone_and_append_social(current_user.player_id, ActualPrivateEvents()[event_id])
-    if(request.headers['Accept'] == 'application/json'):
+    if request.headers['Accept'] == 'application/json':
         return jsonify(ret)
     return jsonPrivateEventToProtobuf(ret).SerializeToString(), 200
 
@@ -2408,7 +2610,7 @@ def relay_events_subgroups_id_late_join(meetup_id):
             state = online[leader]
             lj = events_pb2.LateJoinInformation()
             lj.road_id = road_id(state)
-            lj.road_time = state.roadTime / 1005000
+            lj.road_time = (state.roadTime - 5000) / 1000000
             lj.is_forward = is_forward(state)
             lj.organizerId = leader
             lj.lj_f5 = 0
@@ -2501,9 +2703,9 @@ def str_timestamp_json(ts):
 
 def goalProtobufToJson(goal):
     return {"id":goal.id,"profileId":goal.player_id,"sport":str_sport(goal.sport),"name":goal.name,"type":int(goal.type),"periodicity":int(goal.periodicity),
-"targetDistanceInMeters":goal.target_distance,"targetDurationInMinutes":goal.target_duration,"actualDistanceInMeters":goal.actual_distance,
-"actualDurationInMinutes":goal.actual_duration,"createdOn":str_timestamp_json(goal.created_on),
-"periodEndDate":str_timestamp_json(goal.period_end_date),"status":int(goal.status),"timezone":goal.timezone}
+        "targetDistanceInMeters":goal.target_distance,"targetDurationInMinutes":goal.target_duration,"actualDistanceInMeters":goal.actual_distance,
+        "actualDurationInMinutes":goal.actual_duration,"createdOn":str_timestamp_json(goal.created_on),
+        "periodEndDate":str_timestamp_json(goal.period_end_date),"status":int(goal.status),"timezone":goal.timezone}
 
 def goalJsonToProtobuf(json_goal):
     goal = goal_pb2.Goal()
@@ -2568,7 +2770,7 @@ def api_profiles_goals(player_id):
     if request.method == 'POST':
         if not request.stream:
             return '', 400
-        if(request.headers['Content-Type'] == 'application/x-protobuf-lite'):
+        if request.headers['Content-Type'] == 'application/x-protobuf-lite':
             goal = goal_pb2.Goal()
             goal.ParseFromString(request.stream.read())
         else:
@@ -2652,12 +2854,20 @@ def add_player_to_world(player, course_world, is_pace_partner=False, is_bot=Fals
 def relay_worlds_generic(server_realm=None):
     # Android client also requests a JSON version
     if request.headers['Accept'] == 'application/json':
+        friends = []
+        for player_id in online:
+            profile = get_partial_profile(player_id)
+            friend = {"playerId": player_id, "firstName": profile.first_name, "lastName": profile.last_name, "male": profile.male, "countryISOCode": profile.country_code,
+                "totalDistanceInMeters": jsv0(online[player_id], 'distance'), "rideDurationInSeconds": jsv0(online[player_id], 'time'), "playerType": profile.player_type,
+                "followerStatusOfLoggedInPlayer": "NO_RELATIONSHIP", "rideOnGiven": False, "currentSport": profile_pb2.Sport.Name(jsv0(online[player_id], 'sport')),
+                "enrolledZwiftAcademy": False, "mapId": 1, "ftp": 100, "runTime10kmInSeconds": 3600}
+            friends.append(friend)
         world = { 'currentDateTime': int(get_utc_time()),
                   'currentWorldTime': world_time(),
-                  'friendsInWorld': [],
-                  'mapId': 1, #maybe, 13 for watopia?
+                  'friendsInWorld': friends,
+                  'mapId': 1,
                   'name': 'Public Watopia',
-                  'playerCount': 0,
+                  'playerCount': len(online),
                   'worldId': udp_node_msgs_pb2.ZofflineConstants.RealmID
                 }
         if server_realm:
@@ -2701,6 +2911,50 @@ def relay_worlds_generic(server_realm=None):
 def relay_worlds():
     return relay_worlds_generic()
 
+
+def add_teleport_target(player, targets, is_pace_partner=True):
+    partial_profile = get_partial_profile(player.id)
+    if is_pace_partner:
+        target = targets.pacer_groups.add()
+        target.route = partial_profile.route
+        if player.sport == profile_pb2.Sport.CYCLING:
+            target.ride_power = player.power
+        else:
+            target.speed = player.speed
+    else:
+        target = targets.friends.add()
+        target.route = player.route
+    target.id = player.id
+    target.firstName = partial_profile.first_name
+    target.lastName = partial_profile.last_name
+    target.distance = player.distance
+    target.time = player.time
+    target.country_code = partial_profile.country_code
+    target.sport = player.sport
+    target.power = player.power
+    target.x = player.x
+    target.y_altitude = player.y_altitude
+    target.z = player.z
+
+@app.route('/relay/teleport-targets', methods=['GET'])
+@jwt_to_session_cookie
+@login_required
+def relay_teleport_targets():
+    course = int(request.args.get('mapRevisionId'))
+    targets = world_pb2.TeleportTargets()
+    for p_id in global_pace_partners.keys():
+        pp = global_pace_partners[p_id]
+        pace_partner = pp.route.states[pp.position]
+        if get_course(pace_partner) == course:
+            add_teleport_target(pace_partner, targets)
+    for p_id in online.keys():
+        if p_id != current_user.player_id:
+            player = online[p_id]
+            if get_course(player) == course:
+                add_teleport_target(player, targets, False)
+    return targets.SerializeToString()
+
+
 def iterableToJson(it):
     if it == None:
         return None
@@ -2712,27 +2966,27 @@ def iterableToJson(it):
 def convert_event_to_json(event):
     esgs = []
     for event_cat in event.category:
-        esgs.append({"id":event_cat.id,"name":event_cat.name,"description":event_cat.description,"label":event_cat.label, \
-"subgroupLabel":event_cat.name[-1],"rulesId":event_cat.rules_id,"mapId":event_cat.course_id,"routeId":event_cat.route_id,"routeUrl":event_cat.routeUrl, \
-"jerseyHash":event_cat.jerseyHash,"bikeHash":event_cat.bikeHash,"startLocation":event_cat.startLocation,"invitedLeaders":iterableToJson(event_cat.invitedLeaders), \
-"invitedSweepers":iterableToJson(event_cat.invitedSweepers),"paceType":event_cat.paceType,"fromPaceValue":event_cat.fromPaceValue,"toPaceValue":event_cat.toPaceValue, \
-"fieldLimit":None,"registrationStart":str_timestamp_json(event_cat.registrationStart),"registrationEnd":str_timestamp_json(event_cat.registrationEnd),"lineUpStart":str_timestamp_json(event_cat.lineUpStart), \
-"lineUpEnd":str_timestamp_json(event_cat.lineUpEnd),"eventSubgroupStart":str_timestamp_json(event_cat.eventSubgroupStart),"durationInSeconds":event_cat.durationInSeconds,"laps":event_cat.laps, \
-"distanceInMeters":event_cat.distanceInMeters,"signedUp":False,"signupStatus":1,"registered":False,"registrationStatus":1,"followeeEntrantCount":0, \
-"totalEntrantCount":0,"followeeSignedUpCount":0,"totalSignedUpCount":0,"followeeJoinedCount":0,"totalJoinedCount":0,"auxiliaryUrl":"", \
-"rulesSet":["ALLOWS_LATE_JOIN"],"workoutHash":None,"customUrl":event_cat.customUrl,"overrideMapPreferences":False, \
-"tags":[""],"lateJoinInMinutes":event_cat.lateJoinInMinutes,"timeTrialOptions":None,"qualificationRuleIds":None,"accessValidationResult":None})
-    return {"id":event.id,"worldId":event.server_realm,"name":event.name,"description":event.description,"shortName":None,"mapId":event.course_id, \
-"shortDescription":None,"imageUrl":event.imageUrl,"routeId":event.route_id,"rulesId":event.rules_id,"rulesSet":["ALLOWS_LATE_JOIN"], \
-"routeUrl":None,"jerseyHash":event.jerseyHash,"bikeHash":None,"visible":event.visible,"overrideMapPreferences":event.overrideMapPreferences,"eventStart":str_timestamp_json(event.eventStart), "tags":[""], \
-"durationInSeconds":event.durationInSeconds,"distanceInMeters":event.distanceInMeters,"laps":event.laps,"privateEvent":False,"invisibleToNonParticipants":event.invisibleToNonParticipants, \
-"followeeEntrantCount":0,"totalEntrantCount":0,"followeeSignedUpCount":0,"totalSignedUpCount":0,"followeeJoinedCount":0,"totalJoinedCount":0, \
-"eventSeries":None,"auxiliaryUrl":"","imageS3Name":None,"imageS3Bucket":None,"sport":str_sport(event.sport),"cullingType":"CULLING_EVERYBODY", \
-"recurring":True,"recurringOffset":None,"publishRecurring":True,"parentId":None,"type":events_pb2._EVENTTYPEV2.values_by_number[int(event.eventType)].name, \
-"eventType":events_pb2._EVENTTYPE.values_by_number[int(event.eventType)].name, \
-"workoutHash":None,"customUrl":"","restricted":False,"unlisted":False,"eventSecret":None,"accessExpression":None,"qualificationRuleIds":None, \
-"lateJoinInMinutes":event.lateJoinInMinutes,"timeTrialOptions":None,"microserviceName":None,"microserviceExternalResourceId":None, \
-"microserviceEventVisibility":None, "minGameVersion":None,"recordable":True,"imported":False,"eventTemplateId":None, "eventSubgroups": esgs }
+        esgs.append({"id":event_cat.id,"name":event_cat.name,"description":event_cat.description,"label":event_cat.label,
+            "subgroupLabel":event_cat.name[-1],"rulesId":event_cat.rules_id,"mapId":event_cat.course_id,"routeId":event_cat.route_id,"routeUrl":event_cat.routeUrl,
+            "jerseyHash":event_cat.jerseyHash,"bikeHash":event_cat.bikeHash,"startLocation":event_cat.startLocation,"invitedLeaders":iterableToJson(event_cat.invitedLeaders),
+            "invitedSweepers":iterableToJson(event_cat.invitedSweepers),"paceType":event_cat.paceType,"fromPaceValue":event_cat.fromPaceValue,"toPaceValue":event_cat.toPaceValue,
+            "fieldLimit":None,"registrationStart":str_timestamp_json(event_cat.registrationStart),"registrationEnd":str_timestamp_json(event_cat.registrationEnd),"lineUpStart":str_timestamp_json(event_cat.lineUpStart),
+            "lineUpEnd":str_timestamp_json(event_cat.lineUpEnd),"eventSubgroupStart":str_timestamp_json(event_cat.eventSubgroupStart),"durationInSeconds":event_cat.durationInSeconds,"laps":event_cat.laps,
+            "distanceInMeters":event_cat.distanceInMeters,"signedUp":False,"signupStatus":1,"registered":False,"registrationStatus":1,"followeeEntrantCount":0,
+            "totalEntrantCount":0,"followeeSignedUpCount":0,"totalSignedUpCount":0,"followeeJoinedCount":0,"totalJoinedCount":0,"auxiliaryUrl":"",
+            "rulesSet":["ALLOWS_LATE_JOIN"],"workoutHash":None,"customUrl":event_cat.customUrl,"overrideMapPreferences":False,
+            "tags":[""],"lateJoinInMinutes":event_cat.lateJoinInMinutes,"timeTrialOptions":None,"qualificationRuleIds":None,"accessValidationResult":None})
+    return {"id":event.id,"worldId":event.server_realm,"name":event.name,"description":event.description,"shortName":None,"mapId":event.course_id,
+        "shortDescription":None,"imageUrl":event.imageUrl,"routeId":event.route_id,"rulesId":event.rules_id,"rulesSet":["ALLOWS_LATE_JOIN"],
+        "routeUrl":None,"jerseyHash":event.jerseyHash,"bikeHash":None,"visible":event.visible,"overrideMapPreferences":event.overrideMapPreferences,"eventStart":str_timestamp_json(event.eventStart), "tags":[""],
+        "durationInSeconds":event.durationInSeconds,"distanceInMeters":event.distanceInMeters,"laps":event.laps,"privateEvent":False,"invisibleToNonParticipants":event.invisibleToNonParticipants,
+        "followeeEntrantCount":0,"totalEntrantCount":0,"followeeSignedUpCount":0,"totalSignedUpCount":0,"followeeJoinedCount":0,"totalJoinedCount":0,
+        "eventSeries":None,"auxiliaryUrl":"","imageS3Name":None,"imageS3Bucket":None,"sport":str_sport(event.sport),"cullingType":"CULLING_EVERYBODY",
+        "recurring":True,"recurringOffset":None,"publishRecurring":True,"parentId":None,"type":events_pb2._EVENTTYPEV2.values_by_number[int(event.eventType)].name,
+        "eventType":events_pb2._EVENTTYPE.values_by_number[int(event.eventType)].name,
+        "workoutHash":None,"customUrl":"","restricted":False,"unlisted":False,"eventSecret":None,"accessExpression":None,"qualificationRuleIds":None,
+        "lateJoinInMinutes":event.lateJoinInMinutes,"timeTrialOptions":None,"microserviceName":None,"microserviceExternalResourceId":None,
+        "microserviceEventVisibility":None, "minGameVersion":None,"recordable":True,"imported":False,"eventTemplateId":None, "eventSubgroups": esgs }
 
 def convert_events_to_json(events):
     json_events = []
@@ -2745,14 +2999,15 @@ def transformPrivateEvents(player_id, max_count, status):
     ret = []
     if max_count > 0:
         for e in ActualPrivateEvents().values():
-            for i in e['eventInvites']:
-                if i['invitedProfile']['id'] == player_id:
-                    if i['status'] == status:
-                        e_clone = deepcopy(e)
-                        e_clone['inviteStatus'] = status
-                        ret.append(e_clone)
-                        if len(ret) >= max_count:
-                            return ret
+            if stime_to_timestamp(e['eventStart']) > get_time() - 1800:
+                for i in e['eventInvites']:
+                    if i['invitedProfile']['id'] == player_id:
+                        if i['status'] == status:
+                            e_clone = deepcopy(e)
+                            e_clone['inviteStatus'] = status
+                            ret.append(e_clone)
+                            if len(ret) >= max_count:
+                                return ret
     return ret
 
 #todo: followingCount=3&playerSport=all&eventSport=CYCLING&fetchCampaign=true
@@ -2772,8 +3027,8 @@ def relay_worlds_id_aggregate_mobile(server_realm):
     ppeFeed = transformPrivateEvents(current_user.player_id, pendingEventInviteCount, 'PENDING')
     acceptedEventInviteCount = int(request.args.get('acceptedEventInviteCount'))
     apeFeed = transformPrivateEvents(current_user.player_id, acceptedEventInviteCount, 'ACCEPTED')
-    return jsonify({"events":json_events,"goals":json_goals,"activities":json_activities,"pendingPrivateEventFeed":ppeFeed,"acceptedPrivateEventFeed":apeFeed,"hasFolloweesToRideOn":False, \
-    "worldName":"MAKURIISLANDS","playerCount": len(online),"followingPlayerCount":0,"followingPlayers":[]})
+    return jsonify({"events":json_events,"goals":json_goals,"activities":json_activities,"pendingPrivateEventFeed":ppeFeed,"acceptedPrivateEventFeed":apeFeed,
+        "hasFolloweesToRideOn":False,"worldName":"MAKURIISLANDS","playerCount": len(online),"followingPlayerCount":0,"followingPlayers":[]})
 
 @app.route('/relay/worlds/<int:server_realm>', methods=['GET'], strict_slashes=False)
 def relay_worlds_id(server_realm):
@@ -2822,41 +3077,30 @@ def relay_worlds_attributes():
     player_update.world_time_expire = world_time() + 60000
     player_update.wa_f12 = 1
     player_update.timestamp = int(get_utc_time() * 1000000)
+    state = None
+    if player_update.wa_type == udp_node_msgs_pb2.WA_TYPE.WAT_SPA:
+        chat_message = tcp_node_msgs_pb2.SocialPlayerAction()
+        chat_message.ParseFromString(player_update.payload)
+        if chat_message.player_id in online:
+            state = online[chat_message.player_id]
+            if chat_message.message == '/regroup':
+                regroup_ghosts(chat_message.player_id, True)
+                return '', 201
+            if chat_message.message == '/startline':
+                logger.info('course %s road %s isForward %s roadTime %s route %s' % (get_course(state), road_id(state), is_forward(state), state.roadTime, state.route))
+                return '', 201
+        discord.send_message(chat_message.message, chat_message.player_id)
     for receiving_player_id in online.keys():
         should_receive = False
-        if player_update.wa_type in [udp_node_msgs_pb2.WA_TYPE.WAT_SPA, udp_node_msgs_pb2.WA_TYPE.WAT_SR]:
-            receiving_player = online[receiving_player_id]
-            # Chat message
-            if player_update.wa_type == udp_node_msgs_pb2.WA_TYPE.WAT_SPA:
-                chat_message = tcp_node_msgs_pb2.SocialPlayerAction()
-                chat_message.ParseFromString(player_update.payload)
-                if chat_message.message == '/regroup':
-                    regroup_ghosts(chat_message.player_id)
-                    return '', 201
-                sending_player_id = chat_message.player_id
-                if sending_player_id in online:
-                    sending_player = online[sending_player_id]
-                    if is_nearby(sending_player, receiving_player):
-                        should_receive = True
-            # Segment complete
-            else:
-                segment_complete = segment_result_pb2.SegmentResult()
-                segment_complete.ParseFromString(player_update.payload)
-                sending_player_id = segment_complete.player_id
-                if sending_player_id in online and receiving_player_id != sending_player_id:
-                    sending_player = online[sending_player_id]
-                    if get_course(sending_player) == get_course(receiving_player) or receiving_player.watchingRiderId == sending_player_id:
-                        should_receive = True
+        # Chat message
+        if player_update.wa_type == udp_node_msgs_pb2.WA_TYPE.WAT_SPA:
+            if is_nearby(state, online[receiving_player_id]):
+                should_receive = True
         # Other PlayerUpdate, send to all
         else:
             should_receive = True
         if should_receive:
             enqueue_player_update(receiving_player_id, player_update.SerializeToString())
-    # If it's a chat message, send to Discord
-    if player_update.wa_type == udp_node_msgs_pb2.WA_TYPE.WAT_SPA:
-        chat_message = tcp_node_msgs_pb2.SocialPlayerAction()
-        chat_message.ParseFromString(player_update.payload)
-        discord.send_message(chat_message.message, chat_message.player_id)
     return '', 201
 
 
@@ -2926,6 +3170,124 @@ def api_personal_records_my_records():
     return results.SerializeToString(), 200
 
 
+@app.route('/api/personal-records/results/summary/profiles/me/<sport>', methods=['GET'])
+@jwt_to_session_cookie
+@login_required
+def api_personal_records_results_summary(sport):
+    segment_ids = request.args.getlist('segmentIds')
+    query = {"name": "AllTimeBestResultsForSegments", "labelsAre": "SEGMENT_ID", "sport": sport, "segmentIds": segment_ids}
+    results = []
+    for segment_id in segment_ids:
+        where_stmt = "WHERE segment_id = :s AND player_id = :p AND sport = :sp"
+        args = {"s": int(segment_id), "p": current_user.player_id, "sp": profile_pb2.Sport.Value(sport)}
+        row = db.session.execute(sqlalchemy.text("SELECT * FROM segment_result %s ORDER BY elapsed_ms LIMIT 1" % where_stmt), args).first()
+        if row:
+            count = db.session.execute(sqlalchemy.text("SELECT COUNT(*) FROM segment_result %s" % where_stmt), args).scalar()
+            result = {"label": segment_id, "result": {"segmentId": int(segment_id), "profileId": row.player_id, "firstInitial": row.first_name[0],
+                "lastName": row.last_name, "endTime": stime_to_timestamp(row.finish_time_str) * 1000, "durationInMilliseconds": row.elapsed_ms,
+                "playerType": "NORMAL", "activityId": row.activity_id, "numberOfResults": count}}
+            results.append(result)
+    return jsonify({"query": query, "results": results})
+
+
+def limits(q, y):
+    if q == 1: return ('%s-01-01T00:00:00Z' % y, '%s-03-31T23:59:59Z' % y)
+    if q == 2: return ('%s-04-01T00:00:00Z' % y, '%s-06-30T23:59:59Z' % y)
+    if q == 3: return ('%s-07-01T00:00:00Z' % y, '%s-09-30T23:59:59Z' % y)
+    if q == 4: return ('%s-10-01T00:00:00Z' % y, '%s-12-31T23:59:59Z' % y)
+
+@app.route('/api/personal-records/results/summary/profiles/me/<sport>/segments/<segment_id>/by-quarter', methods=['GET'])
+@jwt_to_session_cookie
+@login_required
+def api_personal_records_results_summary_by_quarter(sport, segment_id):
+    query = {"name": "QuarterlyRecordsForSegment", "labelsAre": "YEAR-QUARTER", "sport": sport, "segmentId": segment_id}
+    where_stmt = "WHERE segment_id = :s AND player_id = :p AND sport = :sp"
+    args = {"s": int(segment_id), "p": current_user.player_id, "sp": profile_pb2.Sport.Value(sport)}
+    row = db.session.execute(sqlalchemy.text("SELECT finish_time_str FROM segment_result %s ORDER BY world_time LIMIT 1" % where_stmt), args).first()
+    oldest = time.strptime(row[0], "%Y-%m-%dT%H:%M:%SZ").tm_year
+    row = db.session.execute(sqlalchemy.text("SELECT finish_time_str FROM segment_result %s ORDER BY world_time DESC LIMIT 1" % where_stmt), args).first()
+    newest = time.strptime(row[0], "%Y-%m-%dT%H:%M:%SZ").tm_year
+    results = []
+    for y in range(oldest, newest + 1):
+        for q in range(1, 5):
+            from_date, to_date = limits(q, y)
+            where_stmt = "WHERE segment_id = :s AND player_id = :p AND sport = :sp AND strftime('%s', finish_time_str) >= strftime('%s', :f) AND strftime('%s', finish_time_str) <= strftime('%s', :t)"
+            args = {"s": int(segment_id), "p": current_user.player_id, "sp": profile_pb2.Sport.Value(sport), "f": from_date, "t": to_date}
+            row = db.session.execute(sqlalchemy.text("SELECT * FROM segment_result %s ORDER BY elapsed_ms LIMIT 1" % where_stmt), args).first()
+            if row:
+                count = db.session.execute(sqlalchemy.text("SELECT COUNT(*) FROM segment_result %s" % where_stmt), args).scalar()
+                result = {"label": '%s-Q%s' % (y, q), "result": {"segmentId": int(segment_id), "profileId": row.player_id, "firstInitial": row.first_name[0],
+                    "lastName": row.last_name, "endTime": stime_to_timestamp(row.finish_time_str) * 1000, "durationInMilliseconds": row.elapsed_ms,
+                    "playerType": "NORMAL", "activityId": row.activity_id, "numberOfResults": count}}
+                results.append(result)
+    return jsonify({"query": query, "results": results})
+
+
+@app.route('/api/personal-records/results/summary/profiles/me/<sport>/segments/<segment_id>/date/<year>/<quarter>/all', methods=['GET'])
+@jwt_to_session_cookie
+@login_required
+def api_personal_records_results_summary_all(sport, segment_id, year, quarter):
+    query = {"name": "AllResultsInQuarterForSegment", "labelsAre": "END_TIME", "sport": sport, "segmentId": segment_id, "year": year, "quarter": quarter}
+    from_date, to_date = limits(int(quarter[1]), year)
+    where_stmt = "WHERE segment_id = :s AND player_id = :p AND sport = :sp AND strftime('%s', finish_time_str) >= strftime('%s', :f) AND strftime('%s', finish_time_str) <= strftime('%s', :t)"
+    args = {"s": int(segment_id), "p": current_user.player_id, "sp": profile_pb2.Sport.Value(sport), "f": from_date, "t": to_date}
+    rows = db.session.execute(sqlalchemy.text("SELECT * FROM segment_result %s" % where_stmt), args)
+    results = []
+    for row in rows:
+        end_time = stime_to_timestamp(row.finish_time_str) * 1000
+        result = {"label": str(end_time), "result": {"segmentId": int(segment_id), "profileId": row.player_id, "firstInitial": row.first_name[0],
+            "lastName": row.last_name, "endTime": end_time, "durationInMilliseconds": row.elapsed_ms, "playerType": "NORMAL", "activityId": row.activity_id, "numberOfResults": 1}}
+        results.append(result)
+    return jsonify({"query": query, "results": results})
+
+
+@app.route('/api/route-results', methods=['POST'])
+@jwt_to_session_cookie
+@login_required
+def route_results():
+    rr = route_result_pb2.RouteResultSaveRequest()
+    rr.ParseFromString(request.stream.read())
+    rr_id = insert_protobuf_into_db(RouteResult, rr, ['f1'])
+    row = RouteResult.query.filter_by(id=rr_id).first()
+    row.player_id = current_user.player_id
+    db.session.commit()
+    return '', 202
+
+def wtime_to_stime(wtime):
+    if wtime:
+        return datetime.datetime.fromtimestamp(wtime / 1000 + 1414016075).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + 'Z'
+    return ''
+
+@app.route('/api/route-results/completion-stats/all', methods=['GET'])
+@jwt_to_session_cookie
+@login_required
+def api_route_results_completion_stats_all():
+    page = int(request.args.get('page'))
+    page_size = int(request.args.get('pageSize'))
+    player_id = current_user.player_id
+    badges = []
+    achievements_file = os.path.join(STORAGE_DIR, str(player_id), 'achievements.bin')
+    if os.path.isfile(achievements_file):
+        achievements = profile_pb2.Achievements()
+        with open(achievements_file, 'rb') as f:
+            achievements.ParseFromString(f.read())
+        for achievement in achievements.achievements:
+            if achievement.id in GD['achievements']:
+                badges.append(GD['achievements'][achievement.id])
+    if db.session.execute(sqlalchemy.text("SELECT COUNT(*) FROM route_result WHERE player_id = :p"), {"p": player_id}).scalar() < len(badges):
+        for badge in badges:
+            db.session.add(RouteResult(player_id=player_id, route_hash=badge))
+        db.session.commit()
+    stats = []
+    rows = db.session.execute(sqlalchemy.text("SELECT route_hash, min(world_time) AS first, max(world_time) AS last FROM route_result WHERE player_id = :p GROUP BY route_hash"), {"p": player_id})
+    for row in rows:
+        stats.append({"routeHash": row.route_hash, "firstCompletedAt": wtime_to_stime(row.first), "lastCompletedAt": wtime_to_stime(row.last)})
+    current_page = stats[page * page_size:page * page_size + page_size]
+    page_count = math.ceil(len(stats) / page_size)
+    response = {"response": {"stats": current_page}, "hasPreviousPage": page > 0, "hasNextPage": page < page_count - 1, "pageCount": page_count}
+    return jsonify(response)
+
+
 @app.route('/live-segment-results-service/leaders', methods=['GET'])
 def live_segment_results_service_leaders():
     results = segment_result_pb2.SegmentResults()
@@ -2967,24 +3329,23 @@ def relay_worlds_leave(server_realm):
 
 
 @app.route('/experimentation/v1/variant', methods=['POST'])
-@jwt_to_session_cookie
-@login_required
+@app.route('/experimentation/v1/machine-id-variant', methods=['POST'])
 def experimentation_v1_variant():
-    stream = variants_pb2.FeatureResponse()
-    stream.ParseFromString(request.stream.read())
+    req = variants_pb2.FeatureRequest()
+    req.ParseFromString(request.stream.read())
     variants = {}
     with open(os.path.join(SCRIPT_DIR, "variants.txt")) as f:
         vs = variants_pb2.FeatureResponse()
         Parse(f.read(), vs)
         for v in vs.variants:
             variants[v.name] = v
-    variants['game_1_20_home_screen'].value = current_user.new_home
     response = variants_pb2.FeatureResponse()
-    for req in stream.variants:
-        if req.name in variants:
-            response.variants.append(variants[req.name])
-        else:
-            logger.info("Unknown feature: " + req.name)
+    for params in req.params:
+        for param in params.param:
+            if param in variants:
+                response.variants.append(variants[param])
+            else:
+                logger.info("Unknown feature: " + param)
     return response.SerializeToString(), 200
 
 def get_profile_saved_game_achiev2_40_bytes():
@@ -3021,8 +3382,17 @@ def achievement_loadPlayerAchievements():
 def achievement_unlock():
     if not request.stream:
         return '', 400
-    with open(os.path.join(STORAGE_DIR, str(current_user.player_id), 'achievements.bin'), 'wb') as f:
-        f.write(request.stream.read())
+    new = profile_pb2.Achievements()
+    new.ParseFromString(request.stream.read())
+    achievements_file = os.path.join(STORAGE_DIR, str(current_user.player_id), 'achievements.bin')
+    achievements = profile_pb2.Achievements()
+    if os.path.isfile(achievements_file):
+        with open(achievements_file, 'rb') as f:
+            achievements.ParseFromString(f.read())
+    for achievement in new.achievements:
+        achievements.achievements.add().id = achievement.id
+    with open(achievements_file, 'wb') as f:
+        f.write(achievements.SerializeToString())
     return '', 202
 
 # if we respond to this request with an empty json a "tutorial" will be presented in ZCA
@@ -3032,33 +3402,27 @@ def api_achievement_category(category_id):
     return '', 404 # returning error for now, since some steps can't be completed
 
 
+@app.route('/api/power-curve/best/<option>', methods=['GET'])
+@jwt_to_session_cookie
+@login_required
+def api_power_curve_best(option):
+    power_curves = profile_pb2.PowerCurveAggregationMsg()
+    for time in ['5', '60', '300', '1200']:
+        filters = [PowerCurve.player_id == current_user.player_id, PowerCurve.time == time]
+        if option == 'last': #default is "all-time"
+            filters.append(PowerCurve.timestamp > int(get_time()) - int(request.args.get('days')) * 86400)
+        row = PowerCurve.query.filter(*filters).order_by(PowerCurve.power.desc()).first()
+        if row:
+            power_curves.watts[time].power = row.power
+    return power_curves.SerializeToString(), 200
+
+
 @app.teardown_request
 def teardown_request(exception):
     db.session.close()
     if exception != None:
         print('Exception: %s' % exception)
 
-
-def move_old_profile():
-    # Before multi profile support only a single profile located in storage
-    # named profile.bin existed. If upgrading from this, convert to
-    # multi profile file structure.
-    profile_file = '%s/profile.bin' % STORAGE_DIR
-    if os.path.isfile(profile_file):
-        with open(profile_file, 'rb') as fd:
-            profile = profile_pb2.PlayerProfile()
-            profile.ParseFromString(fd.read())
-            profile_dir = '%s/%s' % (STORAGE_DIR, profile.id)
-            try:
-                if not os.path.isdir(profile_dir):
-                    os.makedirs(profile_dir)
-            except IOError as e:
-                logger.error("failed to create profile dir (%s):  %s", profile_dir, str(e))
-                sys.exit(1)
-        os.rename(profile_file, '%s/profile.bin' % profile_dir)
-        strava_file = '%s/strava_token.txt' % STORAGE_DIR
-        if os.path.isfile(strava_file):
-            os.rename(strava_file, '%s/strava_token.txt' % profile_dir)
 
 def save_fit(player_id, name, data):
     fit_dir = os.path.join(STORAGE_DIR, str(player_id), 'fit')
@@ -3171,6 +3535,16 @@ def migrate_database():
     db.session.execute(sqlalchemy.text('vacuum')) #shrink database
     logging.warn("Database migration completed")
 
+def update_playback():
+    for row in Playback.query.all():
+        try:
+            with open('%s/playbacks/%s.playback' % (STORAGE_DIR, row.uuid), 'rb') as f:
+                pb = playback_pb2.PlaybackData()
+                pb.ParseFromString(f.read())
+                row.type = pb.type
+        except Exception as exc:
+            logging.warn("update_playback: %s" % repr(exc))
+    db.session.commit()
 
 def check_columns(table_class, table_name):
     rows = db.session.execute(sqlalchemy.text("PRAGMA table_info(%s)" % table_name))
@@ -3178,6 +3552,7 @@ def check_columns(table_class, table_name):
     current_columns = list()
     for row in rows:
         current_columns.append(row[1])
+    added = False
     for column in should_have_columns:
         if not column.name in current_columns:
             nulltext = None
@@ -3192,7 +3567,8 @@ def check_columns(table_class, table_name):
                 defaulttext = " DEFAULT %s" % column.default.arg
             db.session.execute(sqlalchemy.text("ALTER TABLE %s ADD %s %s %s%s" % (table_name, column.name, column.type, nulltext, defaulttext)))
             db.session.commit()
-
+            added = True
+    return added
 
 def send_server_back_online_message():
     time.sleep(30)
@@ -3201,12 +3577,13 @@ def send_server_back_online_message():
     discord.send_message(message)
 
 
-@app.before_first_request
-def before_first_request():
-    move_old_profile()
+with app.app_context():
     db.create_all()
     db.session.commit()
     check_columns(User, 'user')
+    if check_columns(Playback, 'playback'):
+        update_playback()
+    check_columns(RouteResult, 'route_result')
     migrate_database()
     db.session.close()
 
@@ -3238,7 +3615,7 @@ def launch_zwift():
         if MULTIPLAYER:
             return redirect(url_for('login'))
         else:
-            return render_template("user_home.html", username="", enable_ghosts=os.path.exists(ENABLEGHOSTS_FILE), new_home=os.path.exists(NEWHOME_FILE), online=get_online(),
+            return render_template("user_home.html", username=current_user.username, enable_ghosts=os.path.exists(ENABLEGHOSTS_FILE), online=get_online(),
                 is_admin=False, restarting=restarting, restarting_in_minutes=restarting_in_minutes)
     else:
         if MULTIPLAYER:
@@ -3294,20 +3671,18 @@ def auth_realms_zwift_protocol_openid_connect_token():
         else:  # android login
             current_user.enable_ghosts = user.enable_ghosts
             ghosts_enabled[current_user.player_id] = current_user.enable_ghosts
-            current_user.new_home = user.new_home
             from flask_login import encode_cookie
             # cookie is not set in request since we just logged in so create it.
             return jsonify(fake_jwt_with_session_cookie(encode_cookie(str(session['_user_id'])))), 200
     else:
-        AnonUser.enable_ghosts = os.path.exists(ENABLEGHOSTS_FILE)
-        AnonUser.new_home = os.path.exists(NEWHOME_FILE)
+        ghosts_enabled[AnonUser.player_id] = AnonUser.enable_ghosts # to work also on Android
         r = make_response(FAKE_JWT)
         r.mimetype = 'application/json'
         return r
 
 @app.route('/auth/realms/zwift/protocol/openid-connect/logout', methods=['POST'])
 def auth_realms_zwift_protocol_openid_connect_logout():
-    # This is called on ZCA logout, we don't want the game client to logout (anyway jwt.decode would fail)
+    # This is called on ZCA logout, we don't want ZA to logout
     session.clear()
     return '', 204
 
@@ -3322,19 +3697,23 @@ def save_option(option, file):
 @app.route("/start-zwift" , methods=['POST'])
 @login_required
 def start_zwift():
-    current_user.enable_ghosts = 'enableghosts' in request.form.keys()
-    ghosts_enabled[current_user.player_id] = current_user.enable_ghosts
-    current_user.new_home = 'newhome' in request.form.keys()
-    if not MULTIPLAYER:
-        save_option(current_user.enable_ghosts, ENABLEGHOSTS_FILE)
-        save_option(current_user.new_home, NEWHOME_FILE)
-    db.session.commit()
+    if MULTIPLAYER:
+        current_user.enable_ghosts = 'enableghosts' in request.form.keys()
+        db.session.commit()
+        ghosts_enabled[current_user.player_id] = current_user.enable_ghosts
+    else:
+        AnonUser.enable_ghosts = 'enableghosts' in request.form.keys()
+        save_option(AnonUser.enable_ghosts, ENABLEGHOSTS_FILE)
     selected_map = request.form['map']
-    if selected_map == 'CALENDAR':
+    selected_climb = request.form['climb']
+    if selected_map == 'CALENDAR' and selected_climb == 'CALENDAR':
         return redirect("/ride", 302)
     else:
         response = make_response(redirect("http://cdn.zwift.com/map_override", 302))
-        response.set_cookie('selected_map', selected_map, domain=".zwift.com")
+        if selected_map != 'CALENDAR':
+            response.set_cookie('selected_map', selected_map, domain=".zwift.com")
+        if selected_climb != 'CALENDAR':
+            response.set_cookie('selected_climb', selected_climb, domain=".zwift.com")
         if MULTIPLAYER:
             response.set_cookie('remember_token', request.cookies['remember_token'], domain=".zwift.com")
         return response
@@ -3379,13 +3758,20 @@ def run_standalone(passed_online, passed_global_relay, passed_global_pace_partne
                 break
         if not player_id:
             player_id = 1
+            profile_dir = '%s/%s' % (STORAGE_DIR, player_id)
+            try:
+                if not os.path.isdir(profile_dir):
+                    os.makedirs(profile_dir)
+            except IOError as e:
+                logger.error("failed to create profile dir (%s):  %s", profile_dir, str(e))
+                sys.exit(1)
         AnonUser.player_id = player_id
         login_manager.anonymous_user = AnonUser
     login_manager.init_app(app)
 
     @login_manager.user_loader
     def load_user(uid):
-        return User.query.get(int(uid))
+        return db.session.get(User, int(uid))
 
     send_message_thread = threading.Thread(target=send_server_back_online_message)
     send_message_thread.start()
