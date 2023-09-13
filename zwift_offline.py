@@ -153,10 +153,10 @@ reload_pacer_bots = False
 
 class User(UserMixin, db.Model):
     player_id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(100), unique=True, nullable=False)
-    first_name = db.Column(db.String(100), nullable=False)
-    last_name = db.Column(db.String(100), nullable=False)
-    pass_hash = db.Column(db.String(100), nullable=False)
+    username = db.Column(db.Text, unique=True, nullable=False)
+    first_name = db.Column(db.Text, nullable=False)
+    last_name = db.Column(db.Text, nullable=False)
+    pass_hash = db.Column(db.Text, nullable=False)
     enable_ghosts = db.Column(db.Integer, nullable=False, default=1)
     is_admin = db.Column(db.Integer, nullable=False, default=0)
     remember = db.Column(db.Integer, nullable=False, default=0)
@@ -2917,10 +2917,6 @@ def add_teleport_target(player, targets, is_pace_partner=True):
     if is_pace_partner:
         target = targets.pacer_groups.add()
         target.route = partial_profile.route
-        if player.sport == profile_pb2.Sport.CYCLING:
-            target.ride_power = player.power
-        else:
-            target.speed = player.speed
     else:
         target = targets.friends.add()
         target.route = player.route
@@ -2935,6 +2931,8 @@ def add_teleport_target(player, targets, is_pace_partner=True):
     target.x = player.x
     target.y_altitude = player.y_altitude
     target.z = player.z
+    target.ride_power = player.power
+    target.speed = player.speed
 
 @app.route('/relay/teleport-targets', methods=['GET'])
 @jwt_to_session_cookie
@@ -3581,6 +3579,9 @@ with app.app_context():
     db.create_all()
     db.session.commit()
     check_columns(User, 'user')
+    if db.session.execute(sqlalchemy.text("SELECT COUNT(*) FROM pragma_table_info('user') WHERE name='new_home'")).scalar():
+        db.session.execute(sqlalchemy.text("ALTER TABLE user DROP COLUMN new_home"))
+        db.session.commit()
     if check_columns(Playback, 'playback'):
         update_playback()
     check_columns(RouteResult, 'route_result')
