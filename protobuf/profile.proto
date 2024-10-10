@@ -198,7 +198,7 @@ message PlayerProfile {
 }
 
 message PlayerProfiles {
-	 repeated PlayerProfile profiles = 1;
+	repeated PlayerProfile profiles = 1;
 }
 
 message ProfileEntitlement {
@@ -211,7 +211,7 @@ message ProfileEntitlement {
 		USE = 4;
 	}
 	
-	optional int64 f2 = 2; // always -1 when "RIDE"; increasing small value when "USE" (437, 438, 911, ..., 1229)
+	optional int64 id = 2; // always -1 when "RIDE"; increasing small value when "USE" (437, 438, 911, ..., 1229)
 	
 	optional ProfileEntitlementStatus status = 3;
 	enum ProfileEntitlementStatus {
@@ -245,6 +245,10 @@ message ProfileEntitlement {
 	optional uint32 renewal_date_unix = 12; //when next 25km gift renewed
 	optional bool new_trial_system = 13; //do not interrupt current track if trial ended
 	repeated Platform platforms = 14;
+}
+
+message ProfileEntitlements {
+	repeated ProfileEntitlement entitlements = 1;
 }
 
 enum FollowStatus {

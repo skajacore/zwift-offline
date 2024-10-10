@@ -6,7 +6,6 @@ import struct
 import sys
 import threading
 import time
-import csv
 import json
 import math
 import random
@@ -14,8 +13,6 @@ import itertools
 import socketserver
 from urllib3 import PoolManager
 from http.server import SimpleHTTPRequestHandler
-from http.cookies import SimpleCookie
-from collections import deque
 from datetime import datetime, timedelta
 from Crypto.Cipher import AES
 
@@ -49,19 +46,22 @@ if not CDN_PROXY:
         from urllib3.util import connection
         orig_create_connection = connection.create_connection
         def patched_create_connection(address, *args, **kwargs):
-            try:
-                host, port = address
-                answer = resolver.resolve(host)[0].to_text()
-                address = (answer, port)
-            except Exception as exc:
-                print('dns.resolver: %s' % repr(exc))
+            host, port = address
+            answer = resolver.cache.data.get((host, 1, 1))
+            if not answer:
+                try:
+                    answer = resolver.resolve(host)
+                    resolver.cache.put((host, 1, 1), answer)
+                except Exception as exc:
+                    print('dns.resolver: %s' % repr(exc))
+            if answer:
+                address = (answer[0].to_text(), port)
             return orig_create_connection(address, *args, **kwargs)
         connection.create_connection = patched_create_connection
         CDN_PROXY = True
     except:
         pass
 
-SERVER_IP_FILE = "%s/server-ip.txt" % STORAGE_DIR
 FAKE_DNS_FILE = "%s/fake-dns.txt" % STORAGE_DIR
 ENABLE_BOTS_FILE = "%s/enable_bots.txt" % STORAGE_DIR
 DISCORD_CONFIG_FILE = "%s/discord.cfg" % STORAGE_DIR
@@ -76,18 +76,14 @@ else:
             pass
     discord = DummyDiscord()
 
-MAP_OVERRIDE = deque(maxlen=16)
-CLIMB_OVERRIDE = deque(maxlen=16)
-
 bot_update_freq = 3
 pacer_update_freq = 1
 simulated_latency = 300 #makes bots animation smoother than using current time
 last_pp_updates = {}
 last_bot_updates = {}
+last_bookmark_updates = {}
 global_ghosts = {}
-ghosts_enabled = {}
 online = {}
-player_update_queue = {}
 global_pace_partners = {}
 global_bots = {}
 global_news = {} #player id to dictionary of peer_player_id->worldTime
@@ -113,48 +109,26 @@ class CDNHandler(SimpleHTTPRequestHandler):
         return fullpath
 
     def do_GET(self):
-        path_end = self.path.split('/')[-1]
-        if path_end == 'map_override':
-            cookies_string = self.headers.get('Cookie')
-            cookies = SimpleCookie()
-            cookies.load(cookies_string)
-            # We have no identifying information when Zwift makes MapSchedule request except for the client's IP.
-            if 'selected_map' in cookies:
-                MAP_OVERRIDE.append((self.client_address[0], cookies['selected_map'].value))
-            if 'selected_climb' in cookies:
-                CLIMB_OVERRIDE.append((self.client_address[0], cookies['selected_climb'].value))
-            self.send_response(302)
-            self.send_header('Cookie', cookies_string)
-            self.send_header('Location', 'https://secure.zwift.com/ride')
+        # Check if client requested the map be overridden
+        if self.path == '/gameassets/MapSchedule_v2.xml' and self.client_address[0] in zo.map_override:
+            self.send_response(200)
+            self.send_header('Content-type', 'text/xml')
             self.end_headers()
+            start = datetime.today() - timedelta(days=1)
+            output = '<MapSchedule><appointments><appointment map="%s" start="%s"/></appointments><VERSION>1</VERSION></MapSchedule>' % (zo.map_override[self.client_address[0]], start.strftime("%Y-%m-%dT00:01-04"))
+            self.wfile.write(output.encode())
+            del zo.map_override[self.client_address[0]]
             return
-        if self.path == '/gameassets/MapSchedule_v2.xml':
-            # Check if client requested the map be overridden
-            for override in MAP_OVERRIDE:
-                if override[0] == self.client_address[0]:
-                    self.send_response(200)
-                    self.send_header('Content-type', 'text/xml')
-                    self.end_headers()
-                    start = datetime.today() - timedelta(days=1)
-                    output = '<MapSchedule><appointments><appointment map="%s" start="%s"/></appointments><VERSION>1</VERSION></MapSchedule>' % (override[1], start.strftime("%Y-%m-%dT00:01-04"))
-                    self.wfile.write(output.encode())
-                    MAP_OVERRIDE.remove(override)
-                    return
-        if self.path == '/gameassets/PortalRoadSchedule_v1.xml':
-            for override in CLIMB_OVERRIDE:
-                if override[0] == self.client_address[0]:
-                    self.send_response(200)
-                    self.send_header('Content-type', 'text/xml')
-                    self.end_headers()
-                    start = datetime.today() - timedelta(days=1)
-                    output = '<PortalRoads><PortalRoadSchedule><appointments><appointment road="%s" portal="0" start="%s"/></appointments><VERSION>1</VERSION></PortalRoadSchedule></PortalRoads>' % (override[1], start.strftime("%Y-%m-%dT00:01-04"))
-                    self.wfile.write(output.encode())
-                    CLIMB_OVERRIDE.remove(override)
-                    return
-        exceptions = ['Launcher_ver_cur.xml', 'LauncherMac_ver_cur.xml',
-                      'Zwift_ver_cur.xml', 'ZwiftMac_ver_cur.xml',
-                      'ZwiftAndroid_ver_cur.xml', 'Zwift_StreamingFiles_ver_cur.xml']
-        if CDN_PROXY and self.path.startswith('/gameassets/') and not path_end in exceptions:
+        if self.path == '/gameassets/PortalRoadSchedule_v1.xml' and self.client_address[0] in zo.climb_override:
+            self.send_response(200)
+            self.send_header('Content-type', 'text/xml')
+            self.end_headers()
+            start = datetime.today() - timedelta(days=1)
+            output = '<PortalRoads><PortalRoadSchedule><appointments><appointment road="%s" portal="0" start="%s"/></appointments><VERSION>1</VERSION></PortalRoadSchedule></PortalRoads>' % (zo.climb_override[self.client_address[0]], start.strftime("%Y-%m-%dT00:01-04"))
+            self.wfile.write(output.encode())
+            del zo.climb_override[self.client_address[0]]
+            return
+        if CDN_PROXY and self.path.startswith('/gameassets/') and not self.path.endswith('_ver_cur.xml') and not ('User-Agent' in self.headers and 'python-urllib3' in self.headers['User-Agent']):
             try:
                 self.send_response(200)
                 self.end_headers()
@@ -295,22 +269,15 @@ class TCPHandler(socketserver.BaseRequestHandler):
         msg = udp_node_msgs_pb2.ServerToClient()
         msg.player_id = hello.player_id
         msg.world_time = 0
-        if self.request.getpeername()[0] == '127.0.0.1':  # to avoid needing hairpinning
-            udp_node_ip = "127.0.0.1"
-        elif os.path.exists(SERVER_IP_FILE):
-            with open(SERVER_IP_FILE, 'r') as f:
-                udp_node_ip = f.read().rstrip('\r\n')
-        else:
-            udp_node_ip = "127.0.0.1"
         details1 = msg.udp_config.relay_addresses.add()
         details1.lb_realm = udp_node_msgs_pb2.ZofflineConstants.RealmID
         details1.lb_course = 6 # watopia crowd
-        details1.ip = udp_node_ip
+        details1.ip = zo.server_ip
         details1.port = 3022
         details2 = msg.udp_config.relay_addresses.add()
         details2.lb_realm = 0 #generic load balancing realm
         details2.lb_course = 0 #generic load balancing course
-        details2.ip = udp_node_ip
+        details2.ip = zo.server_ip
         details2.port = 3022
         msg.udp_config.uc_f2 = 10
         msg.udp_config.uc_f3 = 30
@@ -385,48 +352,32 @@ class TCPHandler(socketserver.BaseRequestHandler):
                     self.request.sendall(struct.pack('!h', len(r)) + r)
                     zo.zc_connect_queue.pop(player_id)
 
-                message = udp_node_msgs_pb2.ServerToClient()
-                message.server_realm = udp_node_msgs_pb2.ZofflineConstants.RealmID
-                message.player_id = player_id
-                message.world_time = zo.world_time()
+                messages = []
 
                 #PlayerUpdate
-                if player_id in player_update_queue and len(player_update_queue[player_id]) > 0:
-                    added_player_updates = list()
-                    for player_update_proto in player_update_queue[player_id]:
+                if player_id in zo.player_update_queue and len(zo.player_update_queue[player_id]) > 0:
+                    message = udp_node_msgs_pb2.ServerToClient()
+                    message.server_realm = udp_node_msgs_pb2.ZofflineConstants.RealmID
+                    message.player_id = player_id
+                    message.world_time = zo.world_time()
+                    for player_update_proto in list(zo.player_update_queue[player_id]):
+                        if len(message.SerializeToString()) + len(player_update_proto) > 1400:
+                            new_msg = udp_node_msgs_pb2.ServerToClient()
+                            new_msg.CopyFrom(message)
+                            messages.append(new_msg)
+                            del message.updates[:]
                         player_update = message.updates.add()
                         player_update.ParseFromString(player_update_proto)
+                        zo.player_update_queue[player_id].remove(player_update_proto)
+                    messages.append(message)
+                else: #keepalive
+                    messages.append(msg)
 
-                        #Send if 10 updates has already been added and start a new message
-                        if len(message.updates) > 9:
-                            message_payload = message.SerializeToString()
-                            iv.ct = ChannelType.TcpServer
-                            iv.sn = relay.tcp_t_sn
-                            r = encode_packet(message_payload, relay.key, iv, None, None, None)
-                            relay.tcp_t_sn += 1
-                            self.request.sendall(struct.pack('!h', len(r)) + r)
-
-                            message = udp_node_msgs_pb2.ServerToClient()
-                            message.server_realm = udp_node_msgs_pb2.ZofflineConstants.RealmID
-                            message.player_id = player_id
-                            message.world_time = zo.world_time()
-
-                        added_player_updates.append(player_update_proto)
-                    for player_update_proto in added_player_updates:
-                        player_update_queue[player_id].remove(player_update_proto)
-
-                #Check if any updates are added and should be sent to client, otherwise just keep alive
-                if len(message.updates) > 0:
+                for message in messages:
                     message_payload = message.SerializeToString()
                     iv.ct = ChannelType.TcpServer
                     iv.sn = relay.tcp_t_sn
                     r = encode_packet(message_payload, relay.key, iv, None, None, None)
-                    relay.tcp_t_sn += 1
-                    self.request.sendall(struct.pack('!h', len(r)) + r)
-                else:
-                    iv.ct = ChannelType.TcpServer
-                    iv.sn = relay.tcp_t_sn
-                    r = encode_packet(payload, relay.key, iv, None, None, None)
                     relay.tcp_t_sn += 1
                     self.request.sendall(struct.pack('!h', len(r)) + r)
             except Exception as exc:
@@ -450,27 +401,6 @@ class GhostsVariables:
     start_road = 0
     start_rt = 0
 
-def save_ghost(name, player_id):
-    if not player_id in global_ghosts.keys(): return
-    ghosts = global_ghosts[player_id]
-    if len(ghosts.rec.states) > 0:
-        state = ghosts.rec.states[0]
-        folder = '%s/%s/ghosts/%s/' % (STORAGE_DIR, player_id, zo.get_course(state))
-        if state.route: folder += str(state.route)
-        else:
-            folder += str(zo.road_id(state))
-            if not zo.is_forward(state): folder += '/reverse'
-        try:
-            if not os.path.isdir(folder):
-                os.makedirs(folder)
-        except Exception as exc:
-            print('save_ghost: %s' % repr(exc))
-            return
-        ghosts.rec.player_id = player_id
-        f = '%s/%s-%s.bin' % (folder, datetime.utcnow().strftime("%Y-%m-%d-%H-%M-%S"), name)
-        with open(f, 'wb') as fd:
-            fd.write(ghosts.rec.SerializeToString())
-
 def load_ghosts_folder(folder, ghosts):
     if os.path.isdir(folder):
         for f in os.listdir(folder):
@@ -491,14 +421,13 @@ def load_ghosts(player_id, state, ghosts):
         load_ghosts_folder('%s/%s' % (folder, state.route), ghosts)
     ghosts.start_road = zo.road_id(state)
     ghosts.start_rt = state.roadTime
-    with open('%s/start_lines.csv' % SCRIPT_DIR) as fd:
-        sl = [tuple(line) for line in csv.reader(fd)]
-        rt = [t for t in sl if t[0] == str(state.route)]
-        if rt:
-            ghosts.start_road = int(rt[0][1])
-            ghosts.start_rt = int(rt[0][2])
+    with open('%s/data/start_lines.txt' % SCRIPT_DIR) as fd:
+        sl = json.load(fd, object_hook=lambda d: {int(k) if k.lstrip('-').isdigit() else k: v for k, v in d.items()})
+        if state.route in sl:
+            ghosts.start_road = sl[state.route]['road']
+            ghosts.start_rt = sl[state.route]['time']
 
-def regroup_ghosts(player_id, ahead=False):
+def regroup_ghosts(player_id):
     p = online[player_id]
     ghosts = global_ghosts[player_id]
     if not ghosts.loaded:
@@ -507,17 +436,15 @@ def regroup_ghosts(player_id, ahead=False):
     if not ghosts.started and ghosts.play:
         ghosts.started = True
     for g in ghosts.play:
-        states = []
-        for s in g.route.states:
-            if zo.road_id(s) == zo.road_id(p) and zo.is_forward(s) == zo.is_forward(p):
-                states.append((s.roadTime, s.distance))
+        states = [(s.roadTime, s.distance) for s in g.route.states if zo.road_id(s) == zo.road_id(p) and zo.is_forward(s) == zo.is_forward(p)]
         if states:
             c = min(states, key=lambda x: sum(abs(r - d) for r, d in zip((p.roadTime, p.distance), x)))
             g.position = 0
             while g.route.states[g.position].roadTime != c[0] or g.route.states[g.position].distance != c[1]:
                 g.position += 1
-            if ahead:
+            if is_ahead(p, g.route.states[g.position].roadTime):
                 g.position += 1
+    ghosts.last_play = 0
 
 def load_pace_partners():
     for (root, dirs, files) in os.walk(PACE_PARTNERS_DIR):
@@ -547,21 +474,27 @@ def play_pace_partners():
         pause = pacer_update_freq - (time.perf_counter() - start)
         if pause > 0: time.sleep(pause)
 
+def get_names():
+    bots_file = '%s/bot.txt' % STORAGE_DIR
+    if os.path.isfile(bots_file):
+        with open(bots_file) as f:
+            return json.load(f)['riders']
+    with open('%s/data/names.txt' % SCRIPT_DIR) as f:
+        data = json.load(f)
+    riders = []
+    for _ in range(1000):
+        is_male = bool(random.getrandbits(1))
+        riders.append({'first_name': random.choice(data['male_first_names']) if is_male else random.choice(data['female_first_names']),
+            'last_name': random.choice(data['last_names']), 'is_male': is_male, 'country_code': random.choice(zo.GD['country_codes'])})
+    return riders
+
 def load_bots():
-    body_types = [16, 48, 80, 272, 304, 336, 528, 560, 592]
-    hair_types = [25953412, 175379869, 398510584, 659452569, 838618949, 924073005, 1022111028, 1262230565, 1305767757, 1569595897, 1626212425, 1985754517, 2234835005, 2507058825, 3092564365, 3200039653, 3296520581, 3351295312, 3536770137, 4021222889, 4179410997, 4294226781]
-    facial_hair_types = [248681634, 398510584, 867351826, 1947387842, 2173853954, 3169994930, 4131541011, 4216468066]
     multiplier = 1
     with open(ENABLE_BOTS_FILE) as f:
         try:
-            multiplier = int(f.readline().rstrip('\r\n'))
+            multiplier = min(int(f.readline().rstrip('\r\n')), 100)
         except ValueError:
             pass
-    bots_file = '%s/bot.txt' % STORAGE_DIR
-    if not os.path.isfile(bots_file):
-        bots_file = '%s/bot.txt' % SCRIPT_DIR
-    with open(bots_file) as f:
-        data = json.load(f)
     i = 1
     loop_riders = []
     for name in os.listdir(STORAGE_DIR):
@@ -570,6 +503,7 @@ def load_bots():
             for (root, dirs, files) in os.walk(path):
                 for f in files:
                     if f.endswith('.bin'):
+                        positions = []
                         for n in range(0, multiplier):
                             p = profile_pb2.PlayerProfile()
                             p.CopyFrom(zo.random_profile(p))
@@ -582,20 +516,25 @@ def load_bots():
                                     bot.route.ParseFromString(fd.read())
                             else:
                                 bot.route = global_bots[i + 1000000].route
-                            bot.position = random.randrange(len(bot.route.states))
+                            if not positions:
+                                positions = list(range(len(bot.route.states)))
+                                random.shuffle(positions)
+                            bot.position = positions.pop()
                             if not loop_riders:
-                                loop_riders = data['riders'].copy()
+                                loop_riders = get_names()
                                 random.shuffle(loop_riders)
                             rider = loop_riders.pop()
-                            for item in ['first_name', 'last_name', 'is_male', 'country_code', 'ride_jersey', 'bike_frame', 'bike_wheel_front', 'bike_wheel_rear', 'ride_helmet_type', 'glasses_type', 'ride_shoes_type', 'ride_socks_type']:
+                            for item in ['first_name', 'last_name', 'is_male', 'country_code', 'ride_jersey', 'bike_frame', 'bike_frame_colour', 'bike_wheel_front', 'bike_wheel_rear', 'ride_helmet_type', 'glasses_type', 'ride_shoes_type', 'ride_socks_type']:
                                 if item in rider:
                                     setattr(p, item, rider[item])
-                            p.body_type = random.choice(body_types)
-                            p.hair_type = random.choice(hair_types)
+                            p.hair_type = random.choice(zo.GD['hair_types'])
+                            p.hair_colour = random.randrange(5)
                             if p.is_male:
-                                p.facial_hair_type = random.choice(facial_hair_types)
+                                p.body_type = random.choice(zo.GD['body_types_male'])
+                                p.facial_hair_type = random.choice(zo.GD['facial_hair_types'])
+                                p.facial_hair_colour = random.randrange(5)
                             else:
-                                p.body_type += 1
+                                p.body_type = random.choice(zo.GD['body_types_female'])
                             bot.profile = p
                         i += 1
 
@@ -622,16 +561,6 @@ def remove_inactive():
                 zo.logout_player(p_id)
         time.sleep(1)
 
-def get_empty_message(player_id):
-    message = udp_node_msgs_pb2.ServerToClient()
-    message.server_realm = udp_node_msgs_pb2.ZofflineConstants.RealmID
-    message.player_id = player_id
-    message.seqno = 1
-    message.stc_f5 = 1
-    message.stc_f11 = 1
-    message.msgnum = 1
-    return message
-
 def is_state_new_for(peer_player_state, player_id):
     if not player_id in global_news.keys():
         global_news[player_id] = {}
@@ -650,6 +579,15 @@ def nearby_distance(s1, s2):
         if dist <= 100000 or zo.road_id(s1) == zo.road_id(s2):
             return True, dist
     return False, None
+
+def is_ahead(state, roadTime):
+    if zo.is_forward(state):
+        if state.roadTime > roadTime and abs(state.roadTime - roadTime) < 500000:
+            return True
+    else:
+        if state.roadTime < roadTime and abs(state.roadTime - roadTime) < 500000:
+            return True
+    return False
 
 class UDPHandler(socketserver.BaseRequestHandler):
     def handle(self):
@@ -694,8 +632,13 @@ class UDPHandler(socketserver.BaseRequestHandler):
             last_pp_updates[player_id] = 0
         if not player_id in last_bot_updates.keys():
             last_bot_updates[player_id] = 0
+        if not player_id in last_bookmark_updates.keys():
+            last_bookmark_updates[player_id] = 0
 
-        t = time.monotonic()
+        #Add bookmarks for player if missing
+        if not player_id in zo.global_bookmarks.keys():
+            zo.global_bookmarks[player_id] = {}
+        bookmarks = zo.global_bookmarks[player_id]
 
         #Update player online state
         if state.roadTime:
@@ -711,10 +654,11 @@ class UDPHandler(socketserver.BaseRequestHandler):
             global_ghosts[player_id] = GhostsVariables()
             global_ghosts[player_id].rec = udp_node_msgs_pb2.Ghost()
             global_ghosts[player_id].play = []
-
         ghosts = global_ghosts[player_id]
 
-        if player_id in ghosts_enabled and ghosts_enabled[player_id]:
+        t = time.monotonic()
+
+        if player_id in zo.ghosts_enabled and zo.ghosts_enabled[player_id]:
             if state.roadTime and ghosts.last_rt and state.roadTime != ghosts.last_rt:
                 #Load ghosts when start moving (as of version 1.39 player sometimes enters course 6 road 0 at home screen)
                 if not ghosts.loaded:
@@ -725,13 +669,8 @@ class UDPHandler(socketserver.BaseRequestHandler):
                     ghosts.rec.states.append(state)
                     ghosts.last_rec = t
                 #Start loaded ghosts
-                if not ghosts.started and ghosts.play and zo.road_id(state) == ghosts.start_road:
-                    if zo.is_forward(state):
-                        if state.roadTime > ghosts.start_rt and abs(state.roadTime - ghosts.start_rt) < 500000:
-                            regroup_ghosts(player_id)
-                    else:
-                        if state.roadTime < ghosts.start_rt and abs(state.roadTime - ghosts.start_rt) < 500000:
-                            regroup_ghosts(player_id)
+                if not ghosts.started and ghosts.play and zo.road_id(state) == ghosts.start_road and is_ahead(state, ghosts.start_rt):
+                    regroup_ghosts(player_id)
             ghosts.last_rt = state.roadTime
 
         #Set state of player being watched
@@ -746,6 +685,8 @@ class UDPHandler(socketserver.BaseRequestHandler):
         elif state.watchingRiderId in global_bots.keys():
             bot = global_bots[state.watchingRiderId]
             watching_state = bot.route.states[bot.position]
+        elif state.watchingRiderId in bookmarks.keys():
+            watching_state = bookmarks[state.watchingRiderId].state
         elif state.watchingRiderId > 10000000:
             ghost = ghosts.play[math.floor(state.watchingRiderId / 10000000) - 1]
             if len(ghost.route.states) > ghost.position:
@@ -773,6 +714,12 @@ class UDPHandler(socketserver.BaseRequestHandler):
                 is_nearby, distance = nearby_distance(watching_state, bot.route.states[bot.position])
                 if is_nearby:
                     nearby[p_id] = distance
+        if t >= last_bookmark_updates[player_id] + 10:
+            last_bookmark_updates[player_id] = t
+            for p_id in bookmarks.keys():
+                is_nearby, distance = nearby_distance(watching_state, bookmarks[p_id].state)
+                if is_nearby:
+                    nearby[p_id] = distance
         if ghosts.started and t >= ghosts.last_play + bot_update_freq:
             ghosts.last_play = t
             for i, g in enumerate(ghosts.play):
@@ -783,50 +730,50 @@ class UDPHandler(socketserver.BaseRequestHandler):
                     g.position += 1
 
         #Send nearby riders states or empty message
-        message = get_empty_message(player_id)
-        if nearby:
-            if len(nearby) > 100:
-                nearby = dict(sorted(nearby.items(), key=lambda item: item[1]))
-                nearby = dict(itertools.islice(nearby.items(), 100))
-            message.num_msgs = math.ceil(len(nearby) / 10)
-            for p_id in nearby:
-                player = None
-                if p_id in online.keys():
-                    player = online[p_id]
-                elif p_id in global_pace_partners.keys():
-                    pp = global_pace_partners[p_id]
-                    player = pp.route.states[pp.position]
-                    player.worldTime = zo.world_time() - simulated_latency
-                elif p_id in global_bots.keys():
-                    bot = global_bots[p_id]
-                    player = bot.route.states[bot.position]
-                    player.worldTime = zo.world_time() - simulated_latency
-                elif p_id > 10000000:
-                    ghost = ghosts.play[math.floor(p_id / 10000000) - 1]
-                    player = ghost.route.states[ghost.position - 1]
-                    player.id = p_id
-                    player.worldTime = zo.world_time() - simulated_latency
-                if player != None:
-                    if len(message.states) > 9:
-                        message.world_time = zo.world_time()
-                        message.cts_latency = message.world_time - recv.world_time
-                        iv.ct = ChannelType.UdpServer
-                        iv.sn = relay.udp_t_sn
-                        r = encode_packet(message.SerializeToString(), relay.key, iv, None, None, relay.udp_t_sn)
-                        relay.udp_t_sn += 1
-                        socket.sendto(r, client_address)
-                        message.msgnum += 1
-                        del message.states[:]
-                    message.states.append(player)
-        else:
-            message.num_msgs = 1
+        messages = []
+        message = udp_node_msgs_pb2.ServerToClient()
+        message.server_realm = udp_node_msgs_pb2.ZofflineConstants.RealmID
+        message.player_id = player_id
         message.world_time = zo.world_time()
         message.cts_latency = message.world_time - recv.world_time
-        iv.ct = ChannelType.UdpServer
-        iv.sn = relay.udp_t_sn
-        r = encode_packet(message.SerializeToString(), relay.key, iv, None, None, relay.udp_t_sn)
-        relay.udp_t_sn += 1
-        socket.sendto(r, client_address)
+        if len(nearby) > 100:
+            nearby = dict(sorted(nearby.items(), key=lambda item: item[1]))
+            nearby = dict(itertools.islice(nearby.items(), 100))
+        for p_id in nearby:
+            player = None
+            if p_id in online.keys():
+                player = online[p_id]
+            elif p_id in global_pace_partners.keys():
+                pp = global_pace_partners[p_id]
+                player = pp.route.states[pp.position]
+            elif p_id in global_bots.keys():
+                bot = global_bots[p_id]
+                player = bot.route.states[bot.position]
+            elif p_id in bookmarks.keys():
+                player = bookmarks[p_id].state
+            elif p_id > 10000000:
+                ghost = ghosts.play[math.floor(p_id / 10000000) - 1]
+                player = ghost.route.states[ghost.position - 1]
+                player.id = p_id
+            if player != None:
+                if not p_id in online.keys():
+                    player.worldTime = message.world_time - simulated_latency
+                    player.groupId = 0 # fix bots in event only routes
+                if len(message.SerializeToString()) + len(player.SerializeToString()) > 1400:
+                    new_msg = udp_node_msgs_pb2.ServerToClient()
+                    new_msg.CopyFrom(message)
+                    messages.append(new_msg)
+                    del message.states[:]
+                message.states.append(player)
+        messages.append(message)
+        for i, msg in enumerate(messages):
+            msg.num_msgs = len(messages)
+            msg.msgnum = i + 1
+            iv.ct = ChannelType.UdpServer
+            iv.sn = relay.udp_t_sn
+            r = encode_packet(msg.SerializeToString(), relay.key, iv, None, None, relay.udp_t_sn)
+            relay.udp_t_sn += 1
+            socket.sendto(r, client_address)
 
 if os.path.isdir(PACE_PARTNERS_DIR):
     load_pace_partners()
@@ -858,11 +805,9 @@ udpserver_thread.start()
 ri = threading.Thread(target=remove_inactive)
 ri.start()
 
-if os.path.exists(FAKE_DNS_FILE) and os.path.exists(SERVER_IP_FILE):
+if os.path.exists(FAKE_DNS_FILE):
     from fake_dns import fake_dns
-    with open(SERVER_IP_FILE, 'r') as f:
-        server_ip = f.read().rstrip('\r\n')
-        dns = threading.Thread(target=fake_dns, args=(server_ip,))
-        dns.start()
+    dns = threading.Thread(target=fake_dns, args=(zo.server_ip,))
+    dns.start()
 
-zo.run_standalone(online, global_relay, global_pace_partners, global_bots, global_ghosts, ghosts_enabled, save_ghost, regroup_ghosts, player_update_queue, discord)
+zo.run_standalone(online, global_relay, global_pace_partners, global_bots, global_ghosts, regroup_ghosts, discord)
