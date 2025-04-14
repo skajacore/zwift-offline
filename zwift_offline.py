@@ -25,7 +25,7 @@ import xml.etree.ElementTree as ET
 from copy import deepcopy
 from functools import wraps
 from io import BytesIO
-from shutil import copyfile, rmtree
+from shutil import copyfile
 from urllib.parse import quote
 from flask import Flask, request, jsonify, redirect, render_template, url_for, flash, session, make_response, send_file, send_from_directory
 from flask_login import UserMixin, AnonymousUserMixin, LoginManager, login_user, current_user, login_required, logout_user
@@ -132,6 +132,12 @@ if not os.path.exists(CREDENTIALS_KEY_FILE):
 with open(CREDENTIALS_KEY_FILE, 'rb') as f:
     credentials_key = f.read()
 
+GARMIN_DOMAIN = 'garmin.com'
+GARMIN_DOMAIN_FILE = '%s/garmin_domain.txt' % STORAGE_DIR
+if os.path.exists(GARMIN_DOMAIN_FILE):
+    with open(GARMIN_DOMAIN_FILE) as f:
+        GARMIN_DOMAIN = f.readline().rstrip('\r\n')
+
 import warnings
 with warnings.catch_warnings():
     from stravalib.client import Client
@@ -147,7 +153,7 @@ if not os.path.exists(SECRET_KEY_FILE):
         f.write(os.urandom(16))
 with open(SECRET_KEY_FILE, 'rb') as f:
     app.config['SECRET_KEY'] = f.read()
-app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024
+app.config['MAX_CONTENT_LENGTH'] = 4 * 1024 * 1024  # A typical .fit file with power, cadence, and heartrate data recorded in December 2024 is approximately 1.3 MB / 4 hours.
 db = SQLAlchemy()
 db.init_app(app)
 
@@ -385,6 +391,7 @@ class PartialProfile:
     male = True
     weight_in_grams = 0
     imageSrc = ''
+    time = 0
     def to_json(self):
         return {"countryCode": self.country_code,
                 "enrolledZwiftAcademy": False, #don't need
@@ -475,6 +482,10 @@ def get_partial_profile(player_id):
         partial_profile.player_id = player_id
         if player_id in global_pace_partners.keys():
             profile = global_pace_partners[player_id].profile
+            for f in profile.public_attributes:
+                if f.id == 1766985504: #crc32 of "PACE PARTNER - ROUTE"
+                    partial_profile.route = toSigned(f.number_value, 4) if f.number_value >= 0 else -toSigned(-f.number_value, 4)
+                    break
         elif player_id in global_bots.keys():
             profile = global_bots[player_id].profile
         elif player_id > 10000000:
@@ -503,15 +514,8 @@ def get_partial_profile(player_id):
         partial_profile.player_type = profile_pb2.PlayerType.Name(jsf(profile, 'player_type', 1))
         partial_profile.male = profile.is_male
         partial_profile.weight_in_grams = profile.weight_in_grams
-        for f in profile.public_attributes:
-            #0x69520F20=1766985504 - crc32 of "PACE PARTNER - ROUTE"
-            if f.id == 1766985504:
-                if f.number_value >= 0:
-                    partial_profile.route = toSigned(f.number_value, 4)
-                else:
-                    partial_profile.route = -toSigned(-f.number_value, 4)
-                break
         player_partial_profiles[player_id] = partial_profile
+    player_partial_profiles[player_id].time = time.monotonic()
     return player_partial_profiles[player_id]
 
 
@@ -892,15 +896,30 @@ def profile(username):
 @login_required
 def garmin(username):
     file = '%s/%s/garmin_credentials.bin' % (STORAGE_DIR, current_user.player_id)
+    token = os.path.isfile('%s/%s/garth/oauth1_token.json' % (STORAGE_DIR, current_user.player_id))
     if request.method == "POST":
         if request.form['username'] == "" or request.form['password'] == "":
             flash("Garmin credentials can't be empty.")
-            return render_template("garmin.html", username=current_user.username)
+            return render_template("garmin.html", username=current_user.username, token=token)
         encrypt_credentials(file, (request.form['username'], request.form['password']))
-        rmtree('%s/%s/garth' % (STORAGE_DIR, current_user.player_id), ignore_errors=True)
-        return redirect(url_for('settings', username=current_user.username))
     cred = decrypt_credentials(file)
-    return render_template("garmin.html", username=current_user.username, uname=cred[0], passw=cred[1])
+    return render_template("garmin.html", username=current_user.username, uname=cred[0], passw=cred[1], token=token)
+
+
+@app.route("/garmin_auth", methods=['GET'])
+@login_required
+def garmin_auth():
+    try:
+        import garth
+        garth.configure(domain=GARMIN_DOMAIN)
+        username, password = decrypt_credentials('%s/%s/garmin_credentials.bin' % (STORAGE_DIR, current_user.player_id))
+        garth.login(username, password)
+        garth.save('%s/%s/garth' % (STORAGE_DIR, current_user.player_id))
+        flash("Garmin authorized.")
+    except Exception as exc:
+        logger.warning('garmin_auth: %s' % repr(exc))
+        flash("Garmin authorization failed.")
+    return redirect(url_for('garmin', username=current_user.username))
 
 
 @app.route("/intervals/<username>/", methods=["GET", "POST"])
@@ -1046,18 +1065,21 @@ def download_avatarLarge(player_id):
     else:
         return '', 404
 
-@app.route("/delete/<filename>", methods=["GET"])
+@app.route("/delete/<path:filename>", methods=["GET"])
 @login_required
 def delete(filename):
-    credentials = ['garmin_credentials.bin', 'zwift_credentials.bin', 'intervals_credentials.bin']
+    credentials = ['zwift_credentials.bin', 'intervals_credentials.bin']
     strava = ['strava_api.bin', 'strava_token.txt']
-    if filename not in ['profile.bin', 'achievements.bin'] + credentials + strava:
+    garmin = ['garmin_credentials.bin', 'garth/oauth1_token.json']
+    if filename not in ['profile.bin', 'achievements.bin'] + credentials + strava + garmin:
         return '', 403
     delete_file = os.path.join(STORAGE_DIR, str(current_user.player_id), filename)
     if os.path.isfile(delete_file):
-        os.remove("%s" % delete_file)
+        os.remove(delete_file)
     if filename in strava:
         return redirect(url_for('strava', username=current_user.username))
+    if filename in garmin:
+        return redirect(url_for('garmin', username=current_user.username))
     if filename in credentials:
         flash("Credentials removed.")
     return redirect(url_for('settings', username=current_user.username))
@@ -1340,6 +1362,7 @@ def api_users_login():
     req.ParseFromString(request.stream.read())
     player_id = current_user.player_id
     global_relay[player_id] = Relay(req.key)
+    ghosts_enabled[player_id] = current_user.enable_ghosts
 
     response = login_pb2.LoginResponse()
     response.session_state = 'abc'
@@ -1386,6 +1409,7 @@ def api_users_login():
 
 
 @app.route('/relay/session/refresh', methods=['POST'])
+@app.route('/relay/session/renew', methods=['POST'])
 @jwt_to_session_cookie
 @login_required
 def relay_session_refresh():
@@ -1395,31 +1419,20 @@ def relay_session_refresh():
     return refresh.SerializeToString(), 200
 
 
-def save_bookmark(state, name):
-    bookmarks_dir = os.path.join(STORAGE_DIR, str(state.id), 'bookmarks', str(get_course(state)), str(state.sport))
-    if not make_dir(bookmarks_dir):
-        return
-    with open(os.path.join(bookmarks_dir, name + '.bin'), 'wb') as f:
-        f.write(state.SerializeToString())
-
 def logout_player(player_id):
-    #Remove player from online when leaving game/world
-    if player_id in online:
-        activity = 'run' if online[player_id].sport == profile_pb2.Sport.RUNNING else 'ride'
-        save_bookmark(online[player_id], 'Last ' + activity)
-        online.pop(player_id)
-        discord.change_presence(len(online))
     if player_id in global_ghosts:
         del global_ghosts[player_id].rec.states[:]
         global_ghosts[player_id].play.clear()
         global_ghosts.pop(player_id)
-    if player_id in player_partial_profiles:
-        player_partial_profiles.pop(player_id)
+    if player_id in global_bookmarks:
+        global_bookmarks[player_id].clear()
+        global_bookmarks.pop(player_id)
 
 @app.route('/api/users/logout', methods=['POST'])
 @jwt_to_session_cookie
 @login_required
 def api_users_logout():
+    logout_player(current_user.player_id)
     return '', 204
 
 
@@ -1750,16 +1763,15 @@ def update_entitlements(profile):
     e.id = -1
     e.status = profile_pb2.ProfileEntitlement.ProfileEntitlementStatus.ACTIVE
     if os.path.isfile('%s/unlock_entitlements.txt' % STORAGE_DIR) or os.path.isfile('%s/unlock_all_equipment.txt' % STORAGE_DIR):
-        with open('%s/data/entitlements.txt' % SCRIPT_DIR) as f:
-            entitlements = json.load(f)
+        ent = json.load(open('%s/data/entitlements.txt' % SCRIPT_DIR))
+        entitlements = list(range(ent['first'], ent['last'] + 1))
         if os.path.isfile('%s/unlock_all_equipment.txt' % STORAGE_DIR):
-            for i in range(1, min([e['id'] for e in entitlements])):
-                entitlements.append({'id': i})
+            entitlements.extend(list(range(1, ent['first'])))
         for entitlement in entitlements:
-            if not any(e.id == entitlement['id'] for e in profile.entitlements):
+            if not any(e.id == entitlement for e in profile.entitlements):
                 e = profile.entitlements.add()
                 e.type = profile_pb2.ProfileEntitlement.EntitlementType.USE
-                e.id = entitlement['id']
+                e.id = entitlement
                 e.status = profile_pb2.ProfileEntitlement.ProfileEntitlementStatus.ACTIVE
 
 def do_api_profiles(profile_id, is_json):
@@ -2235,37 +2247,19 @@ def garmin_upload(player_id, activity):
     except ImportError as exc:
         logger.warning("garth is not installed. Skipping Garmin upload attempt: %s" % repr(exc))
         return
-    profile_dir = '%s/%s' % (STORAGE_DIR, player_id)
-    garmin_credentials = '%s/garmin_credentials' % profile_dir
-    if os.path.exists(garmin_credentials + '.bin'):
-        garmin_credentials += '.bin'
-    elif os.path.exists(garmin_credentials + '.txt'):
-        garmin_credentials += '.txt'
-    else:
-        logger.info("garmin_credentials missing, skip Garmin activity update")
-        return
-    if garmin_credentials.endswith('.bin'):
-        username, password = decrypt_credentials(garmin_credentials)
-    else:
-        try:
-            with open(garmin_credentials) as f:
-                username = f.readline().rstrip('\r\n')
-                password = f.readline().rstrip('\r\n')
-        except Exception as exc:
-            logger.warning("Failed to read %s. Skipping Garmin upload attempt: %s" % (garmin_credentials, repr(exc)))
-            return
-    garmin_domain = '%s/garmin_domain.txt' % STORAGE_DIR
-    if os.path.exists(garmin_domain):
-        try:
-            with open(garmin_domain) as f:
-                garth.configure(domain=f.readline().rstrip('\r\n'))
-        except Exception as exc:
-            logger.warning("Failed to read %s: %s" % (garmin_domain, repr(exc)))
-    tokens_dir = '%s/garth' % profile_dir
+    garth.configure(domain=GARMIN_DOMAIN)
+    tokens_dir = '%s/%s/garth' % (STORAGE_DIR, player_id)
     try:
         garth.resume(tokens_dir)
-        garth.client.username
+        if garth.client.oauth2_token.expired:
+            garth.client.refresh_oauth2()
+            garth.save(tokens_dir)
     except:
+        garmin_credentials = '%s/%s/garmin_credentials.bin' % (STORAGE_DIR, player_id)
+        if not os.path.exists(garmin_credentials):
+            logger.info("garmin_credentials.bin missing, skip Garmin activity update")
+            return
+        username, password = decrypt_credentials(garmin_credentials)
         try:
             garth.login(username, password)
             garth.save(tokens_dir)
@@ -2273,7 +2267,9 @@ def garmin_upload(player_id, activity):
             logger.warning("Garmin login failed: %s" % repr(exc))
             return
     try:
-        garth.client.post("connectapi", "/upload-service/upload", api=True, files={"file": (activity.fit_filename, BytesIO(activity.fit))})
+        requests.post('https://connectapi.%s/upload-service/upload' % GARMIN_DOMAIN,
+            files={"file": (activity.fit_filename, BytesIO(activity.fit))},
+            headers={'authorization': str(garth.client.oauth2_token)})
     except Exception as exc:
         logger.warning("Garmin upload failed. No internet? %s" % repr(exc))
 
@@ -2413,16 +2409,13 @@ def api_profiles_activities_id(player_id, activity_id):
     response = '{"id":%s}' % activity_id
     if request.args.get('upload-to-strava') != 'true':
         return response, 200
-    if activity.distanceInMeters < 300:
-        Activity.query.filter_by(id=activity_id).delete()
-        db.session.commit()
-        logout_player(player_id)
-        return response, 200
 
     create_power_curve(player_id, BytesIO(activity.fit))
     save_fit(player_id, '%s - %s' % (activity_id, activity.fit_filename), activity.fit)
     if current_user.enable_ghosts:
         save_ghost(player_id, quote(activity.name, safe=' '))
+    if activity.sport == profile_pb2.Sport.CYCLING and activity.distanceInMeters >= 2000:
+        update_streaks(player_id, activity)
     # For using with upload_activity
     with open('%s/%s/last_activity.bin' % (STORAGE_DIR, player_id), 'wb') as f:
         f.write(stream)
@@ -3269,7 +3262,7 @@ def relay_worlds_id_players_id(server_realm, player_id):
     if player_id in global_bots.keys():
         bot = global_bots[player_id]
         return bot.route.states[bot.position].SerializeToString()
-    return ""
+    return '', 404
 
 
 @app.route('/relay/worlds/hash-seeds', methods=['GET'])
@@ -3282,6 +3275,13 @@ def relay_worlds_hash_seeds():
         seed.expiryDate = world_time()+(10800+x*1200)*1000
     return seeds.SerializeToString(), 200
 
+
+def save_bookmark(state, name):
+    bookmarks_dir = os.path.join(STORAGE_DIR, str(state.id), 'bookmarks', str(get_course(state)), str(state.sport))
+    if not make_dir(bookmarks_dir):
+        return
+    with open(os.path.join(bookmarks_dir, name + '.bin'), 'wb') as f:
+        f.write(state.SerializeToString())
 
 @app.route('/relay/worlds/attributes', methods=['POST'])
 @jwt_to_session_cookie
@@ -3584,17 +3584,20 @@ def relay_worlds_leave(server_realm):
     return '{"worldtime":%ld}' % world_time()
 
 
-@app.route('/experimentation/v1/variant', methods=['POST'])
-@app.route('/experimentation/v1/machine-id-variant', methods=['POST'])
-def experimentation_v1_variant():
-    req = variants_pb2.FeatureRequest()
-    req.ParseFromString(request.stream.read())
+def load_variants(file):
+    vs = variants_pb2.FeatureResponse()
+    try:
+        Parse(open(file).read(), vs)
+    except Exception as exc:
+        logging.warning("load_variants: %s" % repr(exc))
     variants = {}
-    with open(os.path.join(SCRIPT_DIR, "data", "variants.txt")) as f:
-        vs = variants_pb2.FeatureResponse()
-        Parse(f.read(), vs)
-        for v in vs.variants:
-            variants[v.name] = v
+    for v in vs.variants:
+        variants[v.name] = v
+    return variants
+
+def create_variants_response(request, variants):
+    req = variants_pb2.FeatureRequest()
+    req.ParseFromString(request)
     response = variants_pb2.FeatureResponse()
     for params in req.params:
         for param in params.param:
@@ -3603,6 +3606,21 @@ def experimentation_v1_variant():
             else:
                 logger.info("Unknown feature: " + param)
     return response.SerializeToString(), 200
+
+@app.route('/experimentation/v1/variant', methods=['POST'])
+@jwt_to_session_cookie
+@login_required
+def experimentation_v1_variant():
+    variants = load_variants(os.path.join(SCRIPT_DIR, "data", "variants.txt"))
+    override = os.path.join(STORAGE_DIR, str(current_user.player_id), "variants.txt")
+    if os.path.isfile(override):
+        variants.update(load_variants(override))
+    return create_variants_response(request.stream.read(), variants)
+
+@app.route('/experimentation/v1/machine-id-variant', methods=['POST'])
+def experimentation_v1_machine_id_variant():
+    variants = load_variants(os.path.join(SCRIPT_DIR, "data", "variants.txt"))
+    return create_variants_response(request.stream.read(), variants)
 
 def get_profile_saved_game_achiev2_40_bytes():
     profile_file = '%s/%s/profile.bin' % (STORAGE_DIR, current_user.player_id)
@@ -3698,17 +3716,71 @@ def api_player_profile_user_game_storage_attributes():
     if request.method == 'POST':
         new = user_storage_pb2.UserStorage()
         new.ParseFromString(request.stream.read())
-        user_storage.MergeFrom(new)
+        for n in new.attributes:
+            for f in n.DESCRIPTOR.fields_by_name:
+                if n.HasField(f):
+                    for a in list(user_storage.attributes):
+                        if a.HasField(f) and (not 'signature' in getattr(a, f).DESCRIPTOR.fields_by_name \
+                          or getattr(a, f).signature == getattr(n, f).signature):
+                            user_storage.attributes.remove(a)
+            user_storage.attributes.add().CopyFrom(n)
         with open(user_storage_file, 'wb') as f:
             f.write(user_storage.SerializeToString())
         return '', 202
     ret = user_storage_pb2.UserStorage()
-    n = int(request.args.get('n'))
-    if n in user_storage.attributes.DESCRIPTOR.fields_by_number:
-        field = user_storage.attributes.DESCRIPTOR.fields_by_number[n].name
-        if user_storage.attributes.HasField(field):
-            getattr(ret.attributes, field).CopyFrom(getattr(user_storage.attributes, field))
+    for n in request.args.getlist('n'):
+        for a in user_storage.attributes:
+            if int(n) in a.DESCRIPTOR.fields_by_number and a.HasField(a.DESCRIPTOR.fields_by_number[int(n)].name):
+                ret.attributes.add().CopyFrom(a)
     return ret.SerializeToString(), 200
+
+
+def get_streaks(player_id):
+    streaks = profile_pb2.Streaks()
+    streaks_file = '%s/%s/streaks.bin' % (STORAGE_DIR, player_id)
+    if os.path.isfile(streaks_file):
+        with open(streaks_file, 'rb') as f:
+            streaks.ParseFromString(f.read())
+    else:
+        profile_file = '%s/%s/profile.bin' % (STORAGE_DIR, player_id)
+        if os.path.isfile(profile_file):
+            profile = profile_pb2.PlayerProfile()
+            with open(profile_file, 'rb') as f:
+                profile.ParseFromString(f.read())
+            for field in ['cur_streak', 'cur_streak_distance', 'cur_streak_elevation', 'cur_streak_calories',
+              'max_streak', 'max_streak_distance', 'max_streak_elevation', 'max_streak_calories']:
+                setattr(streaks, field, int(getattr(profile, field)))
+            streaks.week_end = int(get_week_range(datetime.datetime.fromtimestamp(profile.last_ride))[1].timestamp() * 1000)
+            with open(streaks_file, 'wb') as f:
+                f.write(streaks.SerializeToString())
+    return streaks
+
+def update_streaks(player_id, activity):
+    streaks = get_streaks(player_id)
+    start_date = stime_to_timestamp(activity.start_date) * 1000
+    if start_date > streaks.week_end + 604800000:
+        streaks.cur_streak = 1
+        streaks.cur_streak_distance = 0
+        streaks.cur_streak_elevation = 0
+        streaks.cur_streak_calories = 0
+    elif start_date > streaks.week_end:
+        streaks.cur_streak += 1
+    streaks.cur_streak_distance += int(activity.distanceInMeters)
+    streaks.cur_streak_elevation += int(activity.total_elevation)
+    streaks.cur_streak_calories += int(activity.calories)
+    streaks.max_streak = max(streaks.cur_streak, streaks.max_streak)
+    streaks.max_streak_distance = max(streaks.cur_streak_distance, streaks.max_streak_distance)
+    streaks.max_streak_elevation = max(streaks.cur_streak_elevation, streaks.max_streak_elevation)
+    streaks.max_streak_calories = max(streaks.cur_streak_calories, streaks.max_streak_calories)
+    streaks.week_end = int(get_week_range(datetime.datetime.strptime(activity.start_date, '%Y-%m-%dT%H:%M:%S%z'))[1].timestamp() * 1000)
+    with open('%s/%s/streaks.bin' % (STORAGE_DIR, player_id), 'wb') as f:
+        f.write(streaks.SerializeToString())
+
+@app.route('/api/fitness/streaks', methods=['GET'])
+@jwt_to_session_cookie
+@login_required
+def api_fitness_streaks():
+    return get_streaks(current_user.player_id).SerializeToString(), 200
 
 
 @app.teardown_request
@@ -3866,6 +3938,13 @@ def send_server_back_online_message():
     send_message(message)
     discord.send_message(message)
 
+def remove_inactive():
+    while True:
+        for p_id in list(player_partial_profiles.keys()):
+            if time.monotonic() > player_partial_profiles[p_id].time + 3600:
+                player_partial_profiles.pop(p_id)
+        time.sleep(600)
+
 
 with app.app_context():
     db.create_all()
@@ -3971,13 +4050,10 @@ def auth_realms_zwift_protocol_openid_connect_token():
             else:
                 return '', 401
         else:  # android login
-            current_user.enable_ghosts = user.enable_ghosts
-            ghosts_enabled[current_user.player_id] = current_user.enable_ghosts
             from flask_login import encode_cookie
             # cookie is not set in request since we just logged in so create it.
             return jsonify(fake_jwt_with_session_cookie(encode_cookie(str(session['_user_id'])))), 200
     else:
-        ghosts_enabled[AnonUser.player_id] = AnonUser.enable_ghosts # to work also on Android
         r = make_response(FAKE_JWT)
         r.mimetype = 'application/json'
         return r
@@ -4002,7 +4078,6 @@ def start_zwift():
     if MULTIPLAYER:
         current_user.enable_ghosts = 'enableghosts' in request.form.keys()
         db.session.commit()
-        ghosts_enabled[current_user.player_id] = current_user.enable_ghosts
     else:
         AnonUser.enable_ghosts = 'enableghosts' in request.form.keys()
         save_option(AnonUser.enable_ghosts, ENABLEGHOSTS_FILE)
@@ -4061,6 +4136,8 @@ def run_standalone(passed_online, passed_global_relay, passed_global_pace_partne
 
     send_message_thread = threading.Thread(target=send_server_back_online_message)
     send_message_thread.start()
+    remove_inactive_thread = threading.Thread(target=remove_inactive)
+    remove_inactive_thread.start()
     logger.info("Server version %s is running." % ZWIFT_VER_CUR)
     server = WSGIServer(('0.0.0.0', 443), app, certfile='%s/cert-zwift-com.pem' % SSL_DIR, keyfile='%s/key-zwift-com.pem' % SSL_DIR, log=logger)
     server.serve_forever()

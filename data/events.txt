@@ -21,6 +21,13 @@
     "sport": 0
   },
   {
+    "name": "France - Macaron",
+    "route": 573843083,
+    "distance": 2599.4,
+    "course": 14,
+    "sport": 0
+  },
+  {
     "name": "France Classic Fondo",
     "route": 2136907048,
     "distance": 146423.6,
@@ -30,14 +37,14 @@
   {
     "name": "Gravel Mountain",
     "route": 3687150686,
-    "distance": 5180.9,
+    "distance": 5360.2,
     "course": 16,
     "sport": 0
   },
   {
     "name": "Gravel Mountain Reverse",
     "route": 2956533021,
-    "distance": 5180.9,
+    "distance": 5220.9,
     "course": 16,
     "sport": 0
   },
@@ -65,42 +72,49 @@
   {
     "name": "London - Greater London Loop Reverse",
     "route": 474781994,
-    "distance": 21153.9,
+    "distance": 21151.1,
     "course": 7,
     "sport": 0
   },
   {
     "name": "London - Greatest London Loop Reverse",
     "route": 3976402826,
-    "distance": 25845.7,
+    "distance": 25842.7,
     "course": 7,
     "sport": 0
   },
   {
     "name": "London - Keith Hill After Party",
     "route": 3569674525,
-    "distance": 36652.6,
+    "distance": 36649.7,
     "course": 7,
     "sport": 0
   },
   {
     "name": "London - Leith Hill After Party",
     "route": 1230300449,
-    "distance": 42007.5,
+    "distance": 42004.8,
+    "course": 7,
+    "sport": 0
+  },
+  {
+    "name": "London - ZG25 Climb Champs",
+    "route": 938096831,
+    "distance": 4994.2,
     "course": 7,
     "sport": 0
   },
   {
     "name": "London 8 Reverse",
     "route": 2165880404,
-    "distance": 20465.9,
+    "distance": 20463.3,
     "course": 7,
     "sport": 0
   },
   {
     "name": "London Loop Reverse",
     "route": 1788889233,
-    "distance": 15008.7,
+    "distance": 15006.1,
     "course": 7,
     "sport": 0
   },
@@ -108,13 +122,6 @@
     "name": "Makuri Islands - Neokyo Crit Course",
     "route": 1127056801,
     "distance": 4660.0,
-    "course": 13,
-    "sport": 0
-  },
-  {
-    "name": "Makuri Islands - Shisha Shakedown",
-    "route": 3330165223,
-    "distance": 53480.8,
     "course": 13,
     "sport": 0
   },
@@ -135,28 +142,21 @@
   {
     "name": "New York - Grand Central Circuit Reverse",
     "route": 3687251774,
-    "distance": 9267.6,
+    "distance": 9213.2,
     "course": 8,
     "sport": 0
   },
   {
     "name": "New York - LaGuardia Loop",
     "route": 2422779354,
-    "distance": 4268.7,
+    "distance": 4213.4,
     "course": 8,
     "sport": 0
   },
   {
     "name": "New York - LaGuardia Loop Reverse",
     "route": 3774003351,
-    "distance": 5236.9,
-    "course": 8,
-    "sport": 0
-  },
-  {
-    "name": "New York - NYC KOM After Party",
-    "route": 2372883204,
-    "distance": 37003.6,
+    "distance": 5146.9,
     "course": 8,
     "sport": 0
   },
@@ -196,24 +196,10 @@
     "sport": 0
   },
   {
-    "name": "Richmond Loop Around",
-    "route": 3912793970,
-    "distance": 42663.4,
-    "course": 2,
-    "sport": 0
-  },
-  {
     "name": "Richmond Rollercoaster",
     "route": 948831673,
     "distance": 17203.8,
     "course": 2,
-    "sport": 0
-  },
-  {
-    "name": "Scotland - BRAEk-fast Crits and Grits",
-    "route": 377566656,
-    "distance": 22144.7,
-    "course": 17,
     "sport": 0
   },
   {
@@ -233,7 +219,7 @@
   {
     "name": "Watopia - Chili Pepper Reverse",
     "route": 3694952104,
-    "distance": 7501.8,
+    "distance": 7501.9,
     "course": 6,
     "sport": 1
   },
@@ -280,6 +266,13 @@
     "sport": 0
   },
   {
+    "name": "Watopia - Power to the Portal",
+    "route": 3030004732,
+    "distance": 18525.6,
+    "course": 6,
+    "sport": 0
+  },
+  {
     "name": "Watopia - Road To Ruins Reverse",
     "route": 2967612381,
     "distance": 29846.1,
@@ -303,21 +296,14 @@
   {
     "name": "Watopia - That's Amore Reverse",
     "route": 1586193601,
-    "distance": 5954.1,
+    "distance": 5954.0,
     "course": 6,
     "sport": 1
   },
   {
-    "name": "Watopia - The Magnificent 8",
-    "route": 2207442179,
-    "distance": 29137.0,
-    "course": 6,
-    "sport": 0
-  },
-  {
     "name": "Watopia - Three Sisters Reverse",
     "route": 4263172118,
-    "distance": 45893.7,
+    "distance": 45892.8,
     "course": 6,
     "sport": 0
   },
@@ -352,35 +338,35 @@
   {
     "name": "Watopia - Zwift Bambino Fondo 2022",
     "route": 3368626651,
-    "distance": 53250.2,
+    "distance": 53250.5,
     "course": 6,
     "sport": 0
   },
   {
     "name": "Watopia - Zwift Gran Fondo",
     "route": 242381847,
-    "distance": 97962.9,
+    "distance": 97963.9,
     "course": 6,
     "sport": 0
   },
   {
     "name": "Watopia - Zwift Gran Fondo 2022",
     "route": 1327147942,
-    "distance": 92761.8,
+    "distance": 92757.6,
     "course": 6,
     "sport": 0
   },
   {
     "name": "Watopia - Zwift Medio Fondo",
     "route": 3748780161,
-    "distance": 72998.8,
+    "distance": 72999.2,
     "course": 6,
     "sport": 0
   },
   {
     "name": "Watopia - Zwift Medio Fondo 2022",
     "route": 2900074211,
-    "distance": 79318.4,
+    "distance": 79318.5,
     "course": 6,
     "sport": 0
   },
@@ -388,13 +374,6 @@
     "name": "Yorkshire - Harrogate Circuit Reverse",
     "route": 620436060,
     "distance": 13855.2,
-    "course": 11,
-    "sport": 0
-  },
-  {
-    "name": "Yorkshire - Queen's Highway After Party",
-    "route": 87631443,
-    "distance": 19912.8,
     "course": 11,
     "sport": 0
   },

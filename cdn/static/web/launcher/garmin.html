@@ -1,6 +1,6 @@
 {% extends "./layout.html" %}
 {% block content %}
-  <h1><div class="text-shadow">Garmin Connect credentials</div></h1>
+  <h1><div class="text-shadow">Garmin Connect</div></h1>
   {% if username != "zoffline" %}
     <h4 class="text-shadow">Logged in as {{ username }}</h4>
   {% endif %}
@@ -9,6 +9,11 @@
       <a href="{{ url_for('settings', username=username) }}" class="btn btn-sm btn-secondary">Back</a>
       {% if uname or passw %}
         <a href="/delete/garmin_credentials.bin" class="btn btn-sm btn-danger">Remove credentials</a>
+      {% endif %}
+      {% if token %}
+        <a href="/delete/garth/oauth1_token.json" class="btn btn-sm btn-danger">Remove authorization</a>
+      {% elif uname and passw %}
+        <a href="{{ url_for('garmin_auth') }}" class="btn btn-sm btn-secondary">Authorize</a>
       {% endif %}
     </div>
   </div>

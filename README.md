@@ -2,7 +2,7 @@
 
 zoffline enables the use of [Zwift](http://zwift.com) offline by acting as a partial implementation of a Zwift server. By default zoffline is only for a single player. See [Step 6: Enable Multiplayer](#step-6-optional-enable-multiplayer) for how to enable support for multiple users/profiles.
 
-zoffline also offers riding against ghosts (your previous rides). Enable this feature by checking "Enable ghosts" in zoffline's launcher. See [Ghosts and bots](#ghosts-and-bots) for extra details.
+zoffline also offers riding against ghosts (your previous rides). Enable this feature by checking "Enable ghosts" in zoffline's launcher. See [Extra features](#extra-features) for more details.
 
 Additionally, zoffline's launcher allows selecting a specific map to ride on without mucking about with config files.
 
@@ -11,13 +11,12 @@ Additionally, zoffline's launcher allows selecting a specific map to ride on wit
 Setting up zoffline requires two primary steps. First, zoffline must be installed and run on a system before running Zwift (either on the system running Zwift or on another locally networked system).  Second, Zwift must be configured to use zoffline instead of the official Zwift server.
 
 ### Step 1: Install zoffline
-There are three ways with which to install and run zoffline depending on your platform:
+There are four ways with which to install and run zoffline depending on your platform:
 
 <details><summary>Simplest (Windows only)</summary>
 To install zoffline on Windows:
 
 * Download the latest zoffline release from https://github.com/zoffline/zwift-offline/releases/latest
-  * If you want the RoboPacers, download the source code package and extract the ``pace_partners`` directory to the same folder zoffline is in.
 * If you are not running zoffline on the same PC that Zwift is running: create a ``server-ip.txt`` file in the ``storage`` directory containing the IP address of the PC running zoffline.
 * Run the downloaded zoffline.exe
   * Once run, zoffline will create a ``storage`` directory in the same folder it's in to store your Zwift progress.
@@ -66,40 +65,35 @@ zoffline can be installed on the same machine as Zwift or another local machine.
 
 
 <details><summary>Using Docker Compose</summary>
- 
+
 * Install docker-compose
 * Either use the ``docker-compose.yml`` file in this repo which will build from the Dockerfile, or use this example compose file:
-   ```
-  version: "3.3"
+  ``` yaml
   services:
       zoffline:
-           image: zoffline/zoffline:latest
-           container_name: zoffline
-           environment:
+          image: zoffline/zoffline:latest
+          container_name: zoffline
+          environment:
               - TZ=Europe/London
-           volumes:
+          volumes:
               - ./storage/:/usr/src/app/zwift-offline/storage
-           ports:
+          ports:
               - 80:80
               - 443:443
               - 3024:3024/udp
               - 3025:3025
-           restart: unless-stopped    
-   ```
+          restart: unless-stopped
+  ```
+  * In the ``volumes`` tag replace ``./storage/`` before the ``:`` with the directory path you want to use as your local zoffline data store.
 * If you are not running zoffline on the same PC that Zwift is running: create a ``server-ip.txt`` file in the ``storage`` directory containing the IP address of the PC running zoffline.
-* Start zoffline with:
-  ``docker-compose up -d ``
+* Start zoffline with: ``docker-compose up -d``
 </details>
 
 ### Step 2: Configure Zwift client to use zoffline
 
 <details><summary>Windows Instructions</summary>
 
-* Install Zwift
-  * If your Zwift version is 1.0.135674, you're all set.
-  * If Zwift is not installed, install it before installing zoffline.
-  * If your Zwift version is newer than 1.0.135674 and zoffline is running from source: copy ``C:\Program Files (x86)\Zwift\Zwift_ver_cur.xml`` to zoffline's ``cdn/gameassets/Zwift_Updates_Root/`` overwriting the existing file.
-  * If your Zwift version is newer than 1.0.135674 and zoffline is not running from source: wait for zoffline to be updated.
+* Install Zwift if not already installed
 * __NOTE:__ instead of performing the steps below you can instead just run the __configure_client__ script from https://github.com/oldnapalm/zoffline-helper/releases/latest
 * On your Windows machine running Zwift, copy the following files in this repo to a known location:
   * [ssl/cert-zwift-com.p12](https://github.com/zoffline/zwift-offline/raw/master/ssl/cert-zwift-com.p12)
@@ -123,10 +117,7 @@ to generate your own certificates and do the same.
 
 <details><summary>macOS Instructions</summary>
 
-* Install Zwift
-  * If your Zwift version is 1.0.135674, you're all set.
-  * If Zwift is not installed, install it before installing zoffline.
-  * If your Zwift version is newer than 1.0.135674: copy ``~/Library/Application Support/Zwift/ZwiftMac_ver_cur.xml`` to zoffline's ``cdn/gameassets/Zwift_Updates_Root/`` overwriting the existing file.
+* Install Zwift if not already installed
 * On your Mac machine running Zwift, copy the file [ssl/cert-zwift-com.pem](https://github.com/zoffline/zwift-offline/raw/master/ssl/cert-zwift-com.pem) in this repo to a known location.
 * Open Keychain Access, select "System" under "Keychains", select "Certificates" under "Category"
     * Click "File - Import Items..." and import cert-zwift-com.pem
@@ -149,12 +140,13 @@ to generate your own certificates and do the same.
   * Download and install ``ZofflineObb.apk`` from [here](https://github.com/Argon2000/ZofflineObbAndroid/releases/latest)
   * Download and install ``app-Github-release.apk`` from [here](https://github.com/x-falcon/Virtual-Hosts/releases/latest)
   * Create a `hosts.txt` file to use with the app (you could use a text editor app or create it online with an online tool such as [this](https://passwordsgenerator.net/text-editor/)). The file must look like this (replace ``<zoffline ip>`` with the IP address of the machine running zoffline):
-  ```
-  <zoffline ip> us-or-rly101.zwift.com
-  <zoffline ip> secure.zwift.com
-  <zoffline ip> cdn.zwift.com
-  ```
-  * Run "Virtual Hosts", select the created `hosts.txt` file, fully close (touch the "overview" button and swipe up) the app and run it again
+    ```
+    <zoffline ip> us-or-rly101.zwift.com
+    <zoffline ip> secure.zwift.com
+    <zoffline ip> cdn.zwift.com
+    ```
+  * Turn off "Private DNS" in Android settings
+  * Run "Virtual Hosts" and select the created `hosts.txt` file
   * Optionally, instead of using the "Virtual Hosts" app, you can create a ``fake-dns.txt`` file in the ``storage`` directory and set the "DNS 1" of your phone Wi-Fi connection to the IP address of the PC running zoffline
   * Note: If you know what you're doing and have a capable enough router you can adjust your router to alter these DNS records instead of using the "Virtual Hosts" app or changing your phone DNS.
 * Patch after every installation or update:
@@ -216,7 +208,7 @@ gender). Your profile can be further customized and changed via the in game
 menu (e.g. name, nationality, weight change, etc).
 
 To obtain your current profile:
-* __NOTE:__ instead of performing the steps below you can instead use the "Settings - Zwift" button in the launcher window (Windows and macOS only).
+* __NOTE:__ instead of performing the steps below you can instead use the "Settings - Zwift" button in the launcher window (if using Android, access ``https://<zoffline_ip>/profile/zoffline/``).
 * Ensure zoffline is disabled.
 * Run ``scripts/get_profile.py -u <your_zwift_username>``
   * Or, if using the Windows zoffline.exe version without Python installed you can run ``get_profile.exe`` obtained from https://github.com/oldnapalm/zoffline-helper/releases/latest in place of ``scripts/get_profile.py``
@@ -226,9 +218,9 @@ To obtain your current profile:
 
 </details>
 
-### Step 4 [OPTIONAL]: Upload activities to Strava
+### Step 4 [OPTIONAL]: Upload activities
 
-<details><summary>Expand</summary>
+<details><summary>Strava</summary>
 
 * Get CLIENT_ID and CLIENT_SECRET from https://www.strava.com/settings/api
 * __NOTE:__ instead of performing the steps below you can instead set the authorization callback domain of your API application to ``launcher.zwift.com`` and use the "Settings - Strava" button in the launcher window (Windows and macOS only).
@@ -236,44 +228,29 @@ To obtain your current profile:
   * Or, if using the Windows zoffline.exe version without Python installed you can run ``strava_auth.exe`` obtained from https://github.com/oldnapalm/zoffline-helper/releases/latest in place of ``scripts/strava_auth.py``
 * Open http://localhost:8000/ and authorize.
 * Move the resulting ``strava_token.txt`` (saved in whatever directory you ran ``strava_auth.py`` in) into the ``storage/1`` directory.
-* If testing, ride at least 300 meters, shorter activities won't be uploaded.
 * Automatic screenshots upload is not possible, see [#28](https://github.com/zoffline/zwift-offline/issues/28) for details.
 
 </details>
 
-### Step 5 [OPTIONAL]: Upload activities to Garmin Connect
-
-<details><summary>Expand</summary>
+<details><summary>Garmin Connect</summary>
 
 * If running from source, install garth: ``pip install garth``
 * If needed, create a file ``garmin_domain.txt`` in the ``storage`` directory containing the domain
   * For China use ``garmin.cn``
-* __NOTE:__ instead of performing the step below you can instead use the "Settings - Garmin" button in the launcher window to enter your credentials (Windows and macOS only).
-* Create a file ``garmin_credentials.txt`` in the ``storage/1`` directory containing your login credentials
-  ```
-  <username>
-  <password>
-  ```
-  * Note: this is not secure. Only do this if you are comfortable with your login credentials being stored in a clear text file.
-* If testing, ride at least 300 meters, shorter activities won't be uploaded.
+* Use the "Settings - Garmin" button in the launcher window to enter your credentials (if using Android, access ``https://<zoffline_ip>/garmin/zoffline/``).
+* If your account has multi-factor authentication, run the script ``garmin_auth.py`` and move the resulting ``garth`` folder (saved in whatever directory you ran ``garmin_auth.py`` in) into the ``storage/1`` directory.
+  * Or, if using the Windows zoffline.exe version without Python installed you can run ``garmin_auth.exe`` obtained from https://github.com/oldnapalm/zoffline-helper/releases/latest instead.
 
 </details>
 
-### Step 6 [OPTIONAL]: Enable multiplayer
+<details><summary>Intervals.icu</summary>
 
-<details><summary>Expand</summary>
-
-To enable support for multiple users perform the steps below:
-
-* Create a ``multiplayer.txt`` file in the ``storage`` directory.
-* If you are not running zoffline on the same PC that Zwift is running: create a ``server-ip.txt`` file in the ``storage`` directory containing the IP address of the PC running zoffline.
-  * TCP ports 80, 443, 3025 and UDP port 3024 will need to be open on the PC running zoffline if its running remotely.
-* Start Zwift and create an account.
-  * This account will only exist on your zoffline server and has no relation with your actual Zwift account.
+* Use the "Settings - Intervals" button in the launcher window to enter your credentials (if using Android, access ``https://<zoffline_ip>/intervals/zoffline/``).
+* Copy "Athlete ID" and "API Key" from https://intervals.icu/settings under "Developer Settings".
 
 </details>
 
-### Step 7 [OPTIONAL]: Install Zwift Companion App
+### Step 5 [OPTIONAL]: Install Zwift Companion App
 
 <details><summary>Android (non-rooted device)</summary>
 
@@ -304,58 +281,49 @@ To enable support for multiple users perform the steps below:
   <zoffline ip> secure.zwift.com
   ```
   * Important: don't add ``cdn.zwift.com`` to ``hosts.txt``, Companion needs to download images from the official server
-* Run "Virtual Hosts", select the created ``hosts.txt`` file, fully close (touch the "overview" button and swipe up) the app and run it again
+* Turn off "Private DNS" in Android settings
+* Run "Virtual Hosts" and select the created ``hosts.txt`` file
 * Optionally, instead of using the "Virtual Hosts" app, you can create a ``fake-dns.txt`` file in the ``storage`` directory and set the "DNS 1" of your phone Wi-Fi connection to the IP address of the PC running zoffline
 * Note: If you know what you're doing and have a capable enough router you can adjust your router to alter these DNS records instead of using the "Virtual Hosts" app or changing your phone DNS.
 
 </details>
 
-### Extra optional steps
+### Step 6 [OPTIONAL]: Enable multiplayer
 
 <details><summary>Expand</summary>
 
-* To obtain the official map schedule and update files from Zwift server: create a ``cdn-proxy.txt`` file in the ``storage`` directory. This can only work if you are running zoffline on a different machine than the Zwift client.
-* To enable the password reset feature when multiplayer is enabled: create a ``gmail_credentials.txt`` file in the ``storage`` directory containing the login credentials of a Gmail account. You need to access https://security.google.com/settings/security/apppasswords and create an app password to allow the login from the server.
-* To enable the Discord bridge bot: ``pip3 install discord.py`` and create a ``discord.cfg`` file in the ``storage`` directory containing
-  ```
-  [discord]
-  token = 
-  webhook = 
-  channel = 
-  welcome_message = 
-  help_message = 
-  ```
-* If the Zwift client is having issues connecting to the Linux server ("The request was aborted: Could not create SSL/TLS secure channel." or "The underlying connection was closed: An unexpected error occurred on a send. Received an unexpected EOF or 0 bytes from the transport stream."): change MinProtocol in /etc/ssl/openssl.cnf to TLSv1.0
-  ```
-  [system_default_sect]
-  MinProtocol = TLSv1.0
-  CipherString = DEFAULT@SECLEVEL=1
-  ```
+To enable support for multiple users perform the steps below:
+
+* Create a ``multiplayer.txt`` file in the ``storage`` directory.
+* If you are not running zoffline on the same PC that Zwift is running: create a ``server-ip.txt`` file in the ``storage`` directory containing the IP address of the PC running zoffline.
+  * TCP ports 80, 443, 3025 and UDP port 3024 will need to be open on the PC running zoffline if it's running remotely.
+* Start Zwift and create an account.
+  * This account will only exist on your zoffline server and has no relation with your actual Zwift account.
+* To enable the password reset feature: create a ``gmail_credentials.txt`` file in the ``storage`` directory containing the login credentials of a Gmail account. You need to access https://security.google.com/settings/security/apppasswords and create an app password to allow the login from the server.
+
 </details>
 
-### Ghosts and bots
+### Extra features
 
-<details><summary>Expand</summary>
+<details><summary>Ghosts</summary>
 
-#### Ghosts
-
-* Enable this feature by checking "Enable ghosts" in zoffline's launcher.
-* If you are running Zwift on Android, create a file ``enable_ghosts.txt`` inside the ``storage`` folder.
-  * If multiplayer is enabled, access ``https://<zoffline_ip>/login/``, check "Enable ghosts" and click "Start Zwift" to save the option.
+* Enable this feature by checking "Enable ghosts" in zoffline's launcher (if using Android, access ``https://<zoffline_ip>/user/zoffline/``, check "Enable ghosts" and click "Start Zwift" to save the option).
 * When you save an activity, the ghost will be saved in ``storage/<player_id>/ghosts/<world>/<route>``. Next time you ride the same route, the ghost will be loaded.
 * Type ``.regroup`` in chat to regroup the ghosts.
 * Equipment can be customized by creating a file ``ghost_profile.txt`` inside the ``storage`` folder. The script ``find_equip.py`` can be used to populate this file.
+</details>
 
-#### Bots
+<details><summary>Bots</summary>
 
 * Create a file ``enable_bots.txt`` inside the ``storage`` folder to load ghosts as bots, they will keep riding around regardless of the route you are riding.
 * Optionally, ``enable_bots.txt`` can contain a multiplier value (be careful, if the resulting number of bots is too high, it may cause performance issues or not work at all).
-* Names, nationalities and equipment can be customized by creating a file ``bot.txt`` inside the ``storage`` folder. The scripts ``get_pro_names.py`` and ``get_strava_names.py`` can be used to populate this file.
+* Names, nationalities and equipment can be customized by creating a file ``bot.txt`` inside the ``storage`` folder. The script ``get_pro_names.py`` can be used to populate this file.
 * If you want some random bots, check [this repository](https://github.com/oldnapalm/zoffline-bots).
+</details>
 
-#### RoboPacers (formerly known as Pace Partners)
+<details><summary>RoboPacers</summary>
 
-* RoboPacers are ghosts saved using a power simulator.
+* RoboPacers are ghosts saved using a power simulator, you can find some in [this repository](https://github.com/oldnapalm/zoffline-bots).
 * The ghost must be recorded using update frequency of 1 second (default is 3 seconds).
 * The activity must start and finish at the same position and speed, otherwise the bot won't loop smoothly.
 * The profile must contain a unique player ID and the route ID, so that when you join the bot you take the same turns at intersections.
@@ -363,9 +331,7 @@ To enable support for multiple users perform the steps below:
 * If you want to create a dynamic RoboPacer (increase power on climbs and decrease on descents) you can use [standalone_power.py](https://github.com/oldnapalm/zwift-offline/blob/master/standalone_power.py) (requires 2 ANT sticks, [python-ant](https://github.com/mch/python-ant) and [PowerMeterTx.py](https://github.com/oldnapalm/zwift-offline/blob/master/PowerMeterTx.py)).
 </details>
 
-### Bookmarks
-
-<details><summary>Expand</summary>
+<details><summary>Bookmarks</summary>
 
 * When you finish an activity, your last position will be saved as a bookmark.
 * Bookmarks can also be saved using the command ``.bookmark <name>`` in the chat.
@@ -373,20 +339,39 @@ To enable support for multiple users perform the steps below:
 * You can teleport to a bookmark using the teleport icon on the action bar.
 </details>
 
-### All-time leaderboards
-
-<details><summary>Expand</summary>
+<details><summary>All-time leaderboards</summary>
 
 * To enable all-time leaderboards (override 60 minutes live results and 90 days personal records), create a file ``all_time_leaderboards.txt`` in the ``storage`` directory.
 * Jerseys are still valid for 60 minutes but will be granted only when a new all-time record is set.
 </details>
 
-### Entitlements
-
-<details><summary>Expand</summary>
+<details><summary>Entitlements</summary>
 
 * To unlock entitlements (special equipment), create a file ``unlock_entitlements.txt`` in the ``storage`` directory.
 * To unlock all equipment, create a file ``unlock_all_equipment.txt`` instead.
+</details>
+
+<details><summary>CDN proxy</summary>
+
+* To obtain the official map schedule and update files from Zwift server: create a ``cdn-proxy.txt`` file in the ``storage`` directory. This can only work if you are running zoffline on a different machine than the Zwift client.
+* By default, zoffline will try to proxy using Google public DNS to resolve Zwift host names, this should work even if zoffline is running on the same machine as the Zwift client. To avoid it, create a ``disable_proxy.txt`` file in the ``storage`` directory.
+* If you want to serve update files from zoffline, run the script ``get_gameassets.py`` to download the game files.
+</details>
+
+<details><summary>Discord bridge</summary>
+
+* The Discord bridge is only available if zoffline is running from source.
+* Install discord.py: ``pip3 install discord.py``
+* Create a ``discord.cfg`` file in the ``storage`` directory containing
+  ```
+  [discord]
+  token = 
+  webhook = 
+  channel = 
+  welcome_message = 
+  help_message = 
+  announce_players = 
+  ```
 </details>
 
 ## Community Discord server and Strava club
@@ -409,7 +394,7 @@ Docker
 * pycryptodome (https://pypi.org/project/pycryptodome/)
 * dnspython (https://www.dnspython.org/)
 * fitdecode (https://pypi.org/project/fitdecode/)
-* stravalib (https://github.com/hozn/stravalib)
+* stravalib (https://stravalib.readthedocs.io/)
 * OPTIONAL: garth (https://pypi.org/project/garth/)
 * OPTIONAL: discord.py (https://discordpy.readthedocs.io/)
 
@@ -423,9 +408,21 @@ something, check the ``CHANGELOG`` for possible changes that need to be made.
 Don't expose zoffline to the internet, it was not designed with that in mind.
 
 <details><summary>If zoffline is out of date from Zwift's official client</summary>
-If zoffline is behind in support of the latest Zwift client it can be updated (if running Linux) to run using the latest Zwift version by running this script from within the zwift-offline repository: https://gist.github.com/zoffline/b874e93e24439f0f4fbd7b55f3876fd2
+If zoffline is behind in support of the latest Zwift client it can be updated to run using the latest Zwift version.
+
+* Windows: copy ``C:\Program Files (x86)\Zwift\Zwift_ver_cur.xml`` to zoffline's ``cdn/gameassets/Zwift_Updates_Root/`` overwriting the existing file.
+* macOS: copy ``~/Library/Application Support/Zwift/ZwiftMac_ver_cur.xml`` to zoffline's ``cdn/gameassets/Zwift_Updates_Root/`` overwriting the existing file.
+* Linux: run [this script](https://gist.github.com/zoffline/b874e93e24439f0f4fbd7b55f3876fd2) from within the zwift-offline repository.
 
 Note: there is no guarantee that an untested Zwift update will work with zoffline. However, historically, Zwift updates rarely break zoffline.
+
+Alternatively, [this script](https://gist.github.com/oldnapalm/556c58448a6ee09438b39e1c1c9ce3d0) can be used to downgrade Zwift to the version supported by zoffline.
+</details>
+
+<details><summary>Zwift phased updates</summary>
+
+If you install Zwift during a phased update period, when you enable zoffline it's possible that Zwift attempts to update again and fails.
+To workaround this situation, rename the file ``Zwift_ver_cur.<version>.xml`` in Zwift directory to ``Zwift_ver_cur.xml`` and edit the file ``Zwift_ver_cur_filename.txt`` accordingly.
 </details>
 
 

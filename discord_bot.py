@@ -1,26 +1,25 @@
 import asyncio
-import json
+import aiohttp
 import os
 import threading
-import time
 
 from configparser import ConfigParser
 
 import discord
-import requests
 
 import zwift_offline
 
 
 class DiscordBot(discord.Client):
-    def __init__(self, intents, channel, welcome_msg, help_msg):
+    def __init__(self, intents, channel, welcome_msg, help_msg, announce):
         discord.Client.__init__(self, intents=intents)
-        self.channel = channel
+        self.channel_id = channel
         self.welcome_msg = welcome_msg
         self.help_msg = help_msg
+        self.announce = announce
 
     async def on_ready(self):
-        self.channel = self.get_channel(self.channel)
+        self.channel = self.get_channel(self.channel_id)
 
     async def on_member_join(self, member):
         if self.welcome_msg:
@@ -51,8 +50,9 @@ class DiscordThread(threading.Thread):
         self.token = self.CONFIG.get(SECTION, 'token')
         self.webhook = self.CONFIG.get(SECTION, 'webhook')
         self.channel = self.CONFIG.getint(SECTION, 'channel')
-        self.welcome_msg = self.CONFIG.get(SECTION, 'welcome_message')
-        self.help_msg = self.CONFIG.get(SECTION, 'help_message')
+        self.welcome_msg = self.CONFIG.get(SECTION, 'welcome_message', fallback='')
+        self.help_msg = self.CONFIG.get(SECTION, 'help_message', fallback='')
+        self.announce = self.CONFIG.getboolean(SECTION, 'announce_players', fallback=False)
 
         self.intents = discord.Intents.default()
         self.intents.members = True
@@ -61,14 +61,18 @@ class DiscordThread(threading.Thread):
         self.start()
 
     async def starter(self):
-        self.discord_bot = DiscordBot(self.intents, self.channel, self.welcome_msg, self.help_msg)
+        self.discord_bot = DiscordBot(self.intents, self.channel, self.welcome_msg, self.help_msg, self.announce)
         await self.discord_bot.start(self.token)
 
     def run(self):
         try:
             self.loop.run_until_complete(self.starter())
-        except BaseException:
-            time.sleep(5)
+        except Exception as exc:
+            print('DiscordThread exception: %s' % repr(exc))
+
+    async def webhook_send(self, message, sender):
+        async with aiohttp.ClientSession() as session:
+            await discord.Webhook.from_url(self.webhook, session=session).send(message, username=sender)
 
     def send_message(self, message, sender_id=None):
         if sender_id is not None:
@@ -76,14 +80,11 @@ class DiscordThread(threading.Thread):
             sender = profile.first_name + ' ' + profile.last_name
         else:
             sender = 'Server'
-        data = {}
-        data["content"] = message
-        data["username"] = sender
-        requests.post(self.webhook, data=json.dumps(data), headers={"Content-Type": "application/json"})
+        asyncio.run_coroutine_threadsafe(self.webhook_send(message, sender), self.loop)
 
     def change_presence(self, n):
         if n > 0:
             activity = discord.Game(name=f"{n} rider{'s'[:n>1]} online")
         else:
             activity = None
-        asyncio.run(self.discord_bot.change_presence(activity=activity))
+        asyncio.run_coroutine_threadsafe(self.discord_bot.change_presence(activity=activity), self.loop)
